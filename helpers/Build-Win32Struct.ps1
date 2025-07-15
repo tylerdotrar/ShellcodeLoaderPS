@@ -1,15 +1,16 @@
 ﻿function Build-Win32Struct {
 #.SYNOPSIS
-# PowerShell Script to Create Win32 Data Structures without using Add-Type
-# Arbitrary Version Number: v1.0.0
+# PowerShell Script to Create Win32 Data Structures in Memory
+# Arbitrary Version Number: v1.0.1
 # Author: Tyler C. McCann (@tylerdotrar)
 #
 #.DESCRIPTION
 # This is a streamlined script intended to create Win32 data structures that are usable within PowerShell when
-# interacting with the Win32 API, all without the usage of C# or Add-Type. While Add-Type is a much easier and
-# convenient method of loading Win32 functions into session, the utilization of 'csc.exe' as well as both 
-# compiling and leaving files on disk make it a bit suboptimal.  Plus, relying on literal C# code to get a 
-# PowerShell script working feels like cheating.
+# interacting with the Win32 API, all without the utilization of Add-Type or embedded C# code. While Add-Type
+# is a much easier and convenient method of loading native Win32 API functions into session, the utilization
+# of 'csc.exe' as well as both compiling and leaving files on disk make it a bit suboptimal.
+#
+# Plus, relying on literal C# code to get a PowerShell script working feels like cheating.
 #
 # Parameters:
 #   -StructName     -->  Name of the stuct (e.g., "PROCESS_INFORMATION").
@@ -59,13 +60,22 @@
         }
     }
 
-    # Create a dynamic in-memory assembly and module to define the struct
-    $Domain          = [AppDomain]::CurrentDomain
-    $DynAssembly     = [System.Reflection.AssemblyName]::new([guid]::NewGuid().ToString())                              # Generate unique name for the assembly
-    $AssemblyBuilder = $Domain.DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run) # Define in-memory assembly (no disk artifacts)
-    $ModuleBuilder   = $AssemblyBuilder.DefineDynamicModule([guid]::NewGuid().ToString(), $False)                       # Generate unique name for the in-memory module
+    
+    # Check if the struct type already exists in the current session
+    foreach ($Assembly in [AppDomain]::CurrentDomain.GetAssemblies()) {
+        $CustomType = $Assembly.GetType($StructName, $False)
+        if ($CustomType -ne $NULL) { return $CustomType }
+    }
 
-    # Create a value type (struct) with public, sequential layout for interop
+
+    # Generate a unique in-memory .NET assembly name to host delegate type
+    $DynAssembly = [System.Reflection.AssemblyName]::new([guid]::NewGuid().ToString())
+
+    # Define non-persistent assembly in memory with execute-only permissions
+    $AssemblyBuilder = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $ModuleBuilder   = $AssemblyBuilder.DefineDynamicModule([guid]::NewGuid().ToString())
+
+    # Create a public value type (struct) with sequential memory layout for unmanaged interop
     $Attributes  = 'AutoLayout, AnsiClass, Class, Public, SequentialLayout, Sealed, BeforeFieldInit'
     $TypeBuilder = $ModuleBuilder.DefineType($StructName, $Attributes, [System.ValueType])
 
@@ -74,6 +84,6 @@
         [void]$TypeBuilder.DefineField($Member.Name, $Member.Type, 'Public')
     }
 
-    # Return the type (struct) definition
+    # Return the value type (struct) definition as a usable .NET type
     return $TypeBuilder.CreateType()
 }
