@@ -8,7 +8,7 @@ and low-level PowerShell tomfoolery (without leaning on `Add-Type` or embedded `
 It is written with learning in mind over pure stealth and evasion -- hence why it is written in PowerShell instead of any other
 language that would *actually* make sense (though to be fair that is kinda what makes this project fun and interesting).
 
-**Directory Structure**
+**📁 Directory Structure**
 ```
 ShellcodeLoaderPS/
 |__ helpers/
@@ -141,7 +141,7 @@ end
 
 ## Load-Shellcode.ps1 Usage
 
-Every script should hopefully be excessively documented, so plese refer to the source code for other examples.
+> Every script should hopefully be excessively documented, so plese refer to the source code for other examples.
 
 ```
 Usage: Load-Shellcode [options]
