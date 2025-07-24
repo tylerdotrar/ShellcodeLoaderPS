@@ -1,7 +1,7 @@
 ﻿function Build-Win32Struct {
 #.SYNOPSIS
 # PowerShell Script to Create Win32 Data Structures in Memory
-# Arbitrary Version Number: v1.0.1
+# Arbitrary Version Number: v1.0.2
 # Author: Tyler C. McCann (@tylerdotrar)
 #
 #.DESCRIPTION
@@ -20,15 +20,26 @@
 #   -Help           -->  Return Get-Help information.
 #
 # Example Usage:
-#   PS> $StructMembers = @(
-#           [PSCustomObject]@{ Name = 'hProcess'    ; Type = [IntPtr] },
-#           [PSCustomObject]@{ Name = 'hThread'     ; Type = [IntPtr] },
-#           [PSCustomObject]@{ Name = 'dwProcessId' ; Type = [Int]    },
-#           [PSCustomObject]@{ Name = 'dwThreadId'  ; Type = [Int]    }
-#       )
-#   PS> $CreatedType               = Build-Win32Struct -StructName "PROCESS_INFORMATION" -MembersObject $StructMembers
-#   PS> $ProcessInformationTypeRef = $CreatedType.MakeByRefType() # Used for creating function delegate
-#   PS> $ProcessInformation        = [PROCESS_INFORMATION]::new() # Used as Win32 function parameter
+#  ________________________________________________________________________________________________________________________
+# |                                                                                                                        |
+# | # Method 1:  Create custom struct via simple name & type arrays                                                        |
+# | PS> $NameArray   = @('hProcess', 'hThread', 'dwProcessId', 'dwThreadId')                                               |
+# | PS> $TypeArray   = @([IntPtr], [IntPtr], [Int], [Int])                                                                 |
+# | PS> $CreatedType = Build-Win32Struct -StructName "PROCESS_INFORMATION" -MemberNames $NameArray -MemberTypes $TypeArray |
+# |                                                                                                                        |
+# | # Method 2:  Create custom struct via an object containing names & types                                               |
+# | PS> $StructMembers = @(                                                                                                |
+# |         [PSCustomObject]@{ Name = 'hProcess'    ; Type = [IntPtr] },                                                   |
+# |         [PSCustomObject]@{ Name = 'hThread'     ; Type = [IntPtr] },                                                   |
+# |         [PSCustomObject]@{ Name = 'dwProcessId' ; Type = [Int]    },                                                   |
+# |         [PSCustomObject]@{ Name = 'dwThreadId'  ; Type = [Int]    }                                                    |
+# |      )                                                                                                                 |
+# | PS> $CreatedType = Build-Win32Struct -StructName "PROCESS_INFORMATION" -MembersObject $StructMembers                   |
+# |                                                                                                                        |
+# | # Load created struct type into the session                                                                            |
+# | PS> $ProcessInformationTypeRef = $CreatedType.MakeByRefType() # Used for creating function delegate(s)                 |
+# | PS> $ProcessInformation        = [PROCESS_INFORMATION]::new() # Used for Win32 function parameter(s)                   |
+# |________________________________________________________________________________________________________________________|
 #
 #.LINK
 # https://github.com/tylerdotrar/ShellcodeLoaderPS
@@ -60,13 +71,12 @@
         }
     }
 
-    
+   
     # Check if the struct type already exists in the current session
     foreach ($Assembly in [AppDomain]::CurrentDomain.GetAssemblies()) {
         $CustomType = $Assembly.GetType($StructName, $False)
         if ($CustomType -ne $NULL) { return $CustomType }
     }
-
 
     # Generate a unique in-memory .NET assembly name to host delegate type
     $DynAssembly = [System.Reflection.AssemblyName]::new([guid]::NewGuid().ToString())
