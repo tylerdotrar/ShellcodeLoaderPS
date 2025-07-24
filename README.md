@@ -1,4 +1,5 @@
-# ShellcodeLoaderPS
+
+![image](https://github.com/user-attachments/assets/64fc45d9-b612-47ff-b1bd-e88c89c73259)
 
 This project is a collect of educational PowerShell-based shellcode injection/execution tools with overly verbose comments by design.
 The goal is to offer a modular, readable framework that can educate people on native Windows API usage, shellcode execution techniques,
@@ -29,80 +30,113 @@ _(Note: this project is work-in-progress, therefore some directory structures ha
 
 ## Technical Roadmap
 
-> [!NOTE]
 > This project is actively in development and has a long way to go.  The below section provides a checklist
 > with technical details of current and future completion goals, along with educational high-level breakdowns.
 
 <details>
+  <summary><b>✅ Avoiding Import Address Table (IAT) via Function Delegates</b></summary>
   
-<summary>Project Roadmap & Rundown</summary>
+  - **Summary:**
+    - This technique avoids common (and noisy) practices such as utilizing `Add-Type` and embedded `C#`.
+    - This is accomplished via custom helpers to resolve and invoke raw function pointers with .NET delegates, allowing you to invoke them without adding an entry to the IAT.
+    - Custom Scripts: [Load-Win32Function.ps1](./helpers/Load-Win32Function.ps1), [Build-Win32Struct.ps1](./helpers/Build-Win32Struct.ps1)`
+</details>
 
-**Status:**
-- [x] **Avoiding Import Address Table (IAT) via Function Delegates**
-  - This technique avoids common (and noisy) practices such as utilizing `Add-Type` and embedded `C#`.
-  - This is accomplished via custom helpers to resolve and invoke raw function pointers with .NET delegates, allowing you to invoke them without adding an entry to the IAT.
-  - Custom Scripts: `Load-Win32Function.ps1`, `Build-Win32Struct.ps1`
-- [x] **Local Process Injection (via Win32)**
-  - Inject shellcode into the current local process (i.e., `PowerShell`) using standard Win32 API calls (aka `Kernel32.dll`).
-  - Skipping Native API (aka `Ntdll.dll`) due to remote process injection POC also supporting local process injection.
+<details>
+  <summary><b>✅ Local Process Injection (via Kernel32.dll)</b></summary>
+
+  - **Summary:**
+    - Inject shellcode into the current local process (i.e., `PowerShell`) using standard Win32 API calls (aka `Kernel32.dll`).
+    - Skipping Native API (aka `Ntdll.dll`) due to remote process injection POC also supporting local process injection.
 ```mermaid
 flowchart LR
 
 %% Establish Processes
-PS>**Attacker**<br>PowerShell Session]
-Proc>**Attacker**<br>PowerShell Session]
+PS@{ shape: win-pane, label: "<b>Attacker</b><br>(PowerShell Session)" }
+Proc@{ shape: win-pane, label: "<b>Attacker</b><br>(PowerShell Session)" }
 
-%% Execution Chain
-PS --> | 1: **VirtualAlloc**<br>Allocate memory.  | Proc
-PS --> | 2: **CopyMemory**<br>Copy shellcode to process. | Proc
-PS --> | 3: **CreateThread**<br>Execute shellcode. | Proc
-PS --> | 4: **WaitForSingleObject**<br>Wait for completion. | Proc
+subgraph Win32 Process Injection
+  PS --> | Step 1:<br>**VirtualAlloc**<br>Allocate memory.  | Proc
+  PS --> | Step 2:<br>**CopyMemory**<br>Copy shellcode to process. | Proc
+  PS --> | Step 3:<br>**CreateThread**<br>Execute shellcode. | Proc
+  PS --> | Step 4:<br>**WaitForSingleObject**<br>Wait for completion. | Proc
+end
 ```
+</details>
 
-- [x] **Remote Process Injection (via Win32 API)**
-  - Inject shellcode into remote processes via the Win32 API (aka `Kernel32.dll`).
-  - This also works for local process injection by targeting the current process' PID.
+<details>
+  <summary><b>✅ Remote Process Injection (via Kernel32.dll)</b></summary>
+
+  - **Summary:**
+    - Inject shellcode into remote processes via the Win32 API (aka `Kernel32.dll`).
+    - This also works for local process injection by targeting the current process' PID.
 ```mermaid
-flowchart LR
+flowchart TD;
 
 %% Establish Processes
-PS>**Attacker**<br>PowerShell Session]
-Proc>**Victim**<br>Target Process]
+PS@{ shape: win-pane, label: "<b>Attacker</b><br>(PowerShell Session)" }
+Proc@{ shape: win-pane, label: "<b>Victim</b><br>(Remote Process)" }
 
-%% Execution Chain
-PS --> | 1: **OpenProcess**<br>Acquire handle to process.  | Proc
-PS --> | 2: **VirtualAllocEx**<br>Allocate memory. | Proc
-PS --> | 3: **WriteProcessMemory**<br>Copy shellcode to process. | Proc
-PS --> | 4: **CreateRemoteThread**<br>Execute shellcode. | Proc
+subgraph Win32 Process Injection
+  PS --> | Step 1:<br>**OpenProcess**<br>Acquire handle to process.  | Proc
+  PS --> | Step 2:<br>**VirtualAllocEx**<br>Allocate memory. | Proc
+  PS --> | Step 3:<br>**WriteProcessMemory**<br>Copy shellcode to process. | Proc
+  PS --> | Step 4:<br>**CreateRemoteThread**<br>Execute shellcode. | Proc
+end
 ```
-- [ ] **Remote Process Injection (via Native API)**
-  - Inject shellcode into remote processes via the Native API (aka `Ntdll.dll`).
-  - This also works for local process injection by targeting the current process' PID.
+</details>
+
+<details>
+  <summary><b>❌ Remote Process Injection (via Ntdll.dll)</b></summary>
+
+  - **Summary:**
+    - Inject shellcode into remote processes via the Native API (aka `Ntdll.dll`).
+    - This also works for local process injection by targeting the current process' PID.
 ```mermaid
-flowchart LR
+flowchart TD;
 
 %% Establish Processes
-PS>**Attacker**<br>PowerShell Session]
-Proc>**Victim**<br>Target Process]
+PS@{ shape: win-pane, label: "<b>Attacker</b><br>(PowerShell Session)" }
+Proc@{ shape: win-pane, label: "<b>Victim</b><br>(Remote Process)" }
 
-%% Execution Chain
-PS --> | 1: **NtOpenProcess**<br>Acquire handle to process.  | Proc
-PS --> | 2: **NtAllocateVirtualMemory**<br>Allocate memory. | Proc
-PS --> | 3: **NtWriteVirtualMemory**<br>Copy shellcode to process. | Proc
-PS --> | 4: **NtCreateThreadEx**<br>Execute shellcode. | Proc
+subgraph Native Process Injection
+  PS --> | Step 1:<br>**NtOpenProcess**<br>Acquire handle to process.  | Proc
+  PS --> | Step 2:<br>**NtAllocateVirtualMemory**<br>Allocate memory. | Proc
+  PS --> | Step 3:<br>**NtWriteVirtualMemory**<br>Copy shellcode to process. | Proc
+  PS --> | Step 4:<br>**NtCreateThreadEx**<br>Execute shellcode. | Proc
+end
 ```
-- [ ] **Process Hollowing**
-  - Create a legitimate process in a suspended state, then replace the process' memory with malicious code before resuming execution.
-- [ ] **PPID Spoofing**
-  - Spoof the parent process ID of created processes.
-  - This technique can make malicious processes appear spawned from trusted processes.
-- [ ] **APC Injection (aka Earlybird)**
-  - Queue shellcode execution to a thread's Asynchronous Procedure Call (APC) queue for stealthy execution.
-- [ ] **Direct Syscalls**
-  - Bypass userland API hooks by invoking direct system calls via SysCall stubs.
-  - SysCalls are dependent on system architecture and build versions, so this will need to be very modular.
-  - Reference: https://j00ru.vexillium.org/syscalls/nt/64/
+</details>
 
+<details>
+  <summary><b>❌ Process Hollowing</b></summary>
+  
+  - **Summary:**
+    - Create a legitimate process in a suspended state, then replace the process' memory with malicious code before resuming execution.
+</details>
+
+<details>
+  <summary><b>❌ Parent Process ID (PPID) Spoofing</b></summary>
+  
+  - **Summary:**
+    - Spoof the parent process ID when creating processes.
+    - This technique can make malicious processes appear spawned from trusted processes.
+</details>
+
+<details>
+  <summary><b>❌ APC Injection (aka Earlybird)</b></summary>
+  
+  - **Summary:**
+    - Queue shellcode execution to a thread's Asynchronous Procedure Call (APC) queue for stealthy execution.
+</details>
+
+<details>
+  <summary><b>❌ Direct System Call Implementation</b></summary>
+  
+  - **Summary:**
+    - Bypass userland API hooks by invoking direct system calls via SysCall stubs.
+    - SysCalls are dependent on system architecture and build versions, so this will need to be very modular.
+    - Reference: https://j00ru.vexillium.org/syscalls/nt/64/
 </details>
 
 ## Load-Shellcode.ps1 Usage
@@ -155,7 +189,7 @@ allows for both 64-bit and 32-bit injection, whereas 32-bit sessions only allow 
 
 Included in the files of this repository are two `calc.exe` shellcode files created from `msfvenom`, in both 32-bit and 64-bit...
 
-... with that said, I recognize the in inherent trust needed before executing mysterious, unknown shellcode.  With that said, below are string
+... with that said, I recognize the inherent trust needed before executing mysterious, unknown shellcode.  With that said, below are string
 variants (which are the literal exact bytes I used to write those two `.bin` files) -- so feel free to use these instead.
 
 ```powershell
@@ -168,28 +202,17 @@ $calc32 = '\xfc\xe8\x82\x00\x00\x00\x60\x89\xe5\x31\xc0\x64\x8b\x50\x30\x8b\x52\
 # > msfvenom -p windows/x64/exec CMD=calc.exe -f csharp EXITFUNC=thread
 
 $calc64 = '{
-0xfc,0x48,0x83,0xe4,0xf0,0xe8,0xc0,0x00,0x00,0x00,0x41,0x51,
-0x41,0x50,0x52,0x51,0x56,0x48,0x31,0xd2,0x65,0x48,0x8b,0x52,
-0x60,0x48,0x8b,0x52,0x18,0x48,0x8b,0x52,0x20,0x48,0x8b,0x72,
-0x50,0x48,0x0f,0xb7,0x4a,0x4a,0x4d,0x31,0xc9,0x48,0x31,0xc0,
-0xac,0x3c,0x61,0x7c,0x02,0x2c,0x20,0x41,0xc1,0xc9,0x0d,0x41,
-0x01,0xc1,0xe2,0xed,0x52,0x41,0x51,0x48,0x8b,0x52,0x20,0x8b,
-0x42,0x3c,0x48,0x01,0xd0,0x8b,0x80,0x88,0x00,0x00,0x00,0x48,
-0x85,0xc0,0x74,0x67,0x48,0x01,0xd0,0x50,0x8b,0x48,0x18,0x44,
-0x8b,0x40,0x20,0x49,0x01,0xd0,0xe3,0x56,0x48,0xff,0xc9,0x41,
-0x8b,0x34,0x88,0x48,0x01,0xd6,0x4d,0x31,0xc9,0x48,0x31,0xc0,
-0xac,0x41,0xc1,0xc9,0x0d,0x41,0x01,0xc1,0x38,0xe0,0x75,0xf1,
-0x4c,0x03,0x4c,0x24,0x08,0x45,0x39,0xd1,0x75,0xd8,0x58,0x44,
-0x8b,0x40,0x24,0x49,0x01,0xd0,0x66,0x41,0x8b,0x0c,0x48,0x44,
-0x8b,0x40,0x1c,0x49,0x01,0xd0,0x41,0x8b,0x04,0x88,0x48,0x01,
-0xd0,0x41,0x58,0x41,0x58,0x5e,0x59,0x5a,0x41,0x58,0x41,0x59,
-0x41,0x5a,0x48,0x83,0xec,0x20,0x41,0x52,0xff,0xe0,0x58,0x41,
-0x59,0x5a,0x48,0x8b,0x12,0xe9,0x57,0xff,0xff,0xff,0x5d,0x48,
-0xba,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x48,0x8d,0x8d,
-0x01,0x01,0x00,0x00,0x41,0xba,0x31,0x8b,0x6f,0x87,0xff,0xd5,
-0xbb,0xe0,0x1d,0x2a,0x0a,0x41,0xba,0xa6,0x95,0xbd,0x9d,0xff,
-0xd5,0x48,0x83,0xc4,0x28,0x3c,0x06,0x7c,0x0a,0x80,0xfb,0xe0,
-0x75,0x05,0xbb,0x47,0x13,0x72,0x6f,0x6a,0x00,0x59,0x41,0x89,
+0xfc,0x48,0x83,0xe4,0xf0,0xe8,0xc0,0x00,0x00,0x00,0x41,0x51,0x41,0x50,0x52,0x51,0x56,0x48,0x31,0xd2,0x65,0x48,0x8b,0x52,
+0x60,0x48,0x8b,0x52,0x18,0x48,0x8b,0x52,0x20,0x48,0x8b,0x72,0x50,0x48,0x0f,0xb7,0x4a,0x4a,0x4d,0x31,0xc9,0x48,0x31,0xc0,
+0xac,0x3c,0x61,0x7c,0x02,0x2c,0x20,0x41,0xc1,0xc9,0x0d,0x41,0x01,0xc1,0xe2,0xed,0x52,0x41,0x51,0x48,0x8b,0x52,0x20,0x8b,
+0x42,0x3c,0x48,0x01,0xd0,0x8b,0x80,0x88,0x00,0x00,0x00,0x48,0x85,0xc0,0x74,0x67,0x48,0x01,0xd0,0x50,0x8b,0x48,0x18,0x44,
+0x8b,0x40,0x20,0x49,0x01,0xd0,0xe3,0x56,0x48,0xff,0xc9,0x41,0x8b,0x34,0x88,0x48,0x01,0xd6,0x4d,0x31,0xc9,0x48,0x31,0xc0,
+0xac,0x41,0xc1,0xc9,0x0d,0x41,0x01,0xc1,0x38,0xe0,0x75,0xf1,0x4c,0x03,0x4c,0x24,0x08,0x45,0x39,0xd1,0x75,0xd8,0x58,0x44,
+0x8b,0x40,0x24,0x49,0x01,0xd0,0x66,0x41,0x8b,0x0c,0x48,0x44,0x8b,0x40,0x1c,0x49,0x01,0xd0,0x41,0x8b,0x04,0x88,0x48,0x01,
+0xd0,0x41,0x58,0x41,0x58,0x5e,0x59,0x5a,0x41,0x58,0x41,0x59,0x41,0x5a,0x48,0x83,0xec,0x20,0x41,0x52,0xff,0xe0,0x58,0x41,
+0x59,0x5a,0x48,0x8b,0x12,0xe9,0x57,0xff,0xff,0xff,0x5d,0x48,0xba,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x48,0x8d,0x8d,
+0x01,0x01,0x00,0x00,0x41,0xba,0x31,0x8b,0x6f,0x87,0xff,0xd5,0xbb,0xe0,0x1d,0x2a,0x0a,0x41,0xba,0xa6,0x95,0xbd,0x9d,0xff,
+0xd5,0x48,0x83,0xc4,0x28,0x3c,0x06,0x7c,0x0a,0x80,0xfb,0xe0,0x75,0x05,0xbb,0x47,0x13,0x72,0x6f,0x6a,0x00,0x59,0x41,0x89,
 0xda,0xff,0xd5,0x63,0x61,0x6c,0x63,0x2e,0x65,0x78,0x65,0x00
 }'
 ```
