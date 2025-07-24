@@ -1,25 +1,140 @@
 # ShellcodeLoaderPS
-Predominantly educational shellcode injector with overly verbose comments.  The idea is to be fairly
-modular, and documented to be an educational resource for those getting into exploit development
-(though choosing PowerShell is an interesting choice for exploit development).
 
-**Key Points:**
-- This tool does not utilize `Add-Type` or any embedded `C#` -- rather it utilizes custom delegates to wrap Win32 function pointers.  This prevents detection via Import Address Table (IAT) hooks.
-- Supports multiple language formats for shellcode strings (e.g., `Python`, `C`, `C++`, `C#`).
-- Contains standalone helper scripts to load Win32/Native API functions as well as custom structs into session.
-  - This also includes Win32 examples to help manipulate the Win32 API intuitively.
+This project is a collect of educational PowerShell-based shellcode injection/execution tools with overly verbose comments by design.
+The goal is to offer a modular, readable framework that can educate people on native Windows API usage, shellcode execution techniques,
+and low-level PowerShell tomfoolery (without leaning on `Add-Type` or embedded `C#`).
 
-## Usage
+It is written with learning in mind over pure stealth and evasion -- hence why it is written in PowerShell instead of any other
+language that would *actually* make sense (though to be fair that is kinda what makes this project fun and interesting).
+
+**Directory Structure**
 ```
+ShellcodeLoaderPS/
+|__ helpers/
+|   |__ win32-examples/*        # Contains examples of Win32 API usage via helper functions (e.g., `CreateProcessA().ps1`).
+|   |__ Build-Win32Struct.ps1   # Defines .NET data structs within the session usable by Win32 functions.
+|   |__ Format-ByteArray.ps1    # Converts shellcode strings in different languages to usable byte arrays.
+|   |__ Load-Win32Function.ps1  # Dynamically resolves and loads Win32 API functions into session via delegates.
+|__ standalone/
+|   |__ add-type/*              # Standalone function(s) for shellcode injection using `Add-Type`.
+|   |__ win32/*                 # Standalone function(s) for shellcode injection using Win32 API via helper functions.
+|   |__ native/*                # Standalone function(s) for shellcode injection using Native API via helper functions.
+|__ Load-Shellcode.ps1          # Main shellcode injector function, wrapping functionality of standalone functions.
+|__ calc32.bin                  # Example 32-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
+|__ calc64.bin                  # Example 64-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
+```
+_(Note: this project is work-in-progress, therefore some directory structures haven't been implemented yet)_
+
+---
+
+## Technical Roadmap
+
+> [!NOTE]
+> This project is actively in development and has a long way to go.  The below section provides a checklist
+> with technical details of current and future completion goals, along with educational high-level breakdowns.
+
+<details>
+  
+<summary>Project Roadmap & Rundown</summary>
+
+**Status:**
+- [x] **Avoiding Import Address Table (IAT) via Function Delegates**
+  - This technique avoids common (and noisy) practices such as utilizing `Add-Type` and embedded `C#`.
+  - This is accomplished via custom helpers to resolve and invoke raw function pointers with .NET delegates, allowing you to invoke them without adding an entry to the IAT.
+  - Custom Scripts: `Load-Win32Function.ps1`, `Build-Win32Struct.ps1`
+- [x] **Local Process Injection (via Win32)**
+  - Inject shellcode into the current local process (i.e., `PowerShell`) using standard Win32 API calls (aka `Kernel32.dll`).
+  - Skipping Native API (aka `Ntdll.dll`) due to remote process injection POC also supporting local process injection.
+```mermaid
+flowchart LR
+
+%% Establish Processes
+PS>**Attacker**<br>PowerShell Session]
+Proc>**Attacker**<br>PowerShell Session]
+
+%% Execution Chain
+PS --> | 1: **VirtualAlloc**<br>Allocate memory.  | Proc
+PS --> | 2: **CopyMemory**<br>Copy shellcode to process. | Proc
+PS --> | 3: **CreateThread**<br>Execute shellcode. | Proc
+PS --> | 4: **WaitForSingleObject**<br>Wait for completion. | Proc
+```
+
+- [x] **Remote Process Injection (via Win32 API)**
+  - Inject shellcode into remote processes via the Win32 API (aka `Kernel32.dll`).
+  - This also works for local process injection by targeting the current process' PID.
+```mermaid
+flowchart LR
+
+%% Establish Processes
+PS>**Attacker**<br>PowerShell Session]
+Proc>**Victim**<br>Target Process]
+
+%% Execution Chain
+PS --> | 1: **OpenProcess**<br>Acquire handle to process.  | Proc
+PS --> | 2: **VirtualAllocEx**<br>Allocate memory. | Proc
+PS --> | 3: **WriteProcessMemory**<br>Copy shellcode to process. | Proc
+PS --> | 4: **CreateRemoteThread**<br>Execute shellcode. | Proc
+```
+- [ ] **Remote Process Injection (via Native API)**
+  - Inject shellcode into remote processes via the Native API (aka `Ntdll.dll`).
+  - This also works for local process injection by targeting the current process' PID.
+```mermaid
+flowchart LR
+
+%% Establish Processes
+PS>**Attacker**<br>PowerShell Session]
+Proc>**Victim**<br>Target Process]
+
+%% Execution Chain
+PS --> | 1: **NtOpenProcess**<br>Acquire handle to process.  | Proc
+PS --> | 2: **NtAllocateVirtualMemory**<br>Allocate memory. | Proc
+PS --> | 3: **NtWriteVirtualMemory**<br>Copy shellcode to process. | Proc
+PS --> | 4: **NtCreateThreadEx**<br>Execute shellcode. | Proc
+```
+- [ ] **Process Hollowing**
+  - Create a legitimate process in a suspended state, then replace the process' memory with malicious code before resuming execution.
+- [ ] **PPID Spoofing**
+  - Spoof the parent process ID of created processes.
+  - This technique can make malicious processes appear spawned from trusted processes.
+- [ ] **APC Injection (aka Earlybird)**
+  - Queue shellcode execution to a thread's Asynchronous Procedure Call (APC) queue for stealthy execution.
+- [ ] **Direct Syscalls**
+  - Bypass userland API hooks by invoking direct system calls via SysCall stubs.
+  - SysCalls are dependent on system architecture and build versions, so this will need to be very modular.
+  - Reference: https://j00ru.vexillium.org/syscalls/nt/64/
+
+</details>
+
+## Load-Shellcode.ps1 Usage
+
+Every script should hopefully be excessively documented, so plese refer to the source code for other examples.
+
+```
+Usage: Load-Shellcode [options]
+
 Parameters:
-    -Shellcode  -->  Shellcode to execute (can be a byte array or string containing file path or bytes).
-    -TargetPID  -->  Target process PID to inject into. 
-    -Debug      -->  Pause execution and print shellcode address for process attachment.
-    -Help       -->  Return Get-Help information.
+  -Shellcode  -->  Shellcode to execute (can be a byte array or string containing file path or bytes).
+  -TargetPID  -->  Target process PID to inject into. 
+  -Debug      -->  Pause execution and print shellcode address for process attachment.
+  -Help       -->  Return Get-Help information.
+
+Example(s):
+  ____________________________________________________________________________
+ |                                                                            |
+ | # Inject shellcode strintg into the current PowerShell process (and debug) |
+ | PS> Load-Shellcode -Shellcode $calc64 -TargetPID $PID -Debug               |
+ |                                                                            |
+ | # Inject shellcode binary into 'Discord.exe'                               |
+ | PS> $DiscordPID = (Get-Process -Name Discord).Id | Select -First 1         |
+ | PS> Load-Shellcode -Shellcode .\calc64.bin -TargetPID $DiscordPID          |
+ |____________________________________________________________________________|
 ```
+_(Note: as of writing, only Win32-based remote process injection has been implemented -- will update over time)_
+
 ![image](https://github.com/user-attachments/assets/8753c151-8cc4-4f19-90be-23a8c2a620c5)
 
 ### Shellcode Parsing
+
 For supported shellcode, the `-Shellcode` parameter is intentionally undeclared and written to accept most shellcode formats. Currently supports strings `[string]` and byte arrays `[byte[]]`.
 If a standard array `[array]` is used, the array will be converted to a string prior to language detection. If a byte array is used, no formatting will occur.
 
@@ -37,6 +152,11 @@ Works with both `Windows PowerShell` and `PowerShell Core (Pwsh)`. Using 64-bit 
 allows for both 64-bit and 32-bit injection, whereas 32-bit sessions only allow 32-bit injection.
 
 ## Shellcode Examples
+
+Included in the files of this repository are two `calc.exe` shellcode files created from `msfvenom`, in both 32-bit and 64-bit...
+
+... with that said, I recognize the in inherent trust needed before executing mysterious, unknown shellcode.  With that said, below are string
+variants (which are the literal exact bytes I used to write those two `.bin` files) -- so feel free to use these instead.
 
 ```powershell
 # 32-bit Shellcode (C Format)
@@ -73,5 +193,4 @@ $calc64 = '{
 0xda,0xff,0xd5,0x63,0x61,0x6c,0x63,0x2e,0x65,0x78,0x65,0x00
 }'
 ```
-
 For 32-bit reverse shell shellcode, check out my [genrev](https://github.com/tylerdotrar/genrev) project!
