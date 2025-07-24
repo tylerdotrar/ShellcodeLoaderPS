@@ -11,18 +11,21 @@ language that would *actually* make sense (though to be fair that is kinda what 
 **📁 Directory Structure**
 ```
 ShellcodeLoaderPS/
+|
 |__ helpers/
-|   |__ win32-examples/*        # Contains examples of Win32 API usage via helper functions (e.g., `CreateProcessA().ps1`).
-|   |__ Build-Win32Struct.ps1   # Defines .NET data structs within the session usable by Win32 functions.
-|   |__ Format-ByteArray.ps1    # Converts shellcode strings in different languages to usable byte arrays.
-|   |__ Load-Win32Function.ps1  # Dynamically resolves and loads Win32 API functions into session via delegates.
+|   |__ win32-examples/*         # Contains examples of Win32 API usage via helper functions (e.g., `CreateProcessA().ps1`).
+|   |__ Build-Win32Struct.ps1    # Defines .NET data structs within the session usable by Win32 functions.
+|   |__ Format-ByteArray.ps1     # Converts shellcode strings in different languages to usable byte arrays.
+|   |__ Load-Win32Function.ps1   # Dynamically resolves and loads Win32 API functions into session via delegates.
+|
 |__ standalone/
-|   |__ add-type/*              # Standalone function(s) for shellcode injection using `Add-Type`.
-|   |__ win32/*                 # Standalone function(s) for shellcode injection using Win32 API via helper functions.
-|   |__ native/*                # Standalone function(s) for shellcode injection using Native API via helper functions.
-|__ Load-Shellcode.ps1          # Main shellcode injector function, wrapping functionality of standalone functions.
-|__ calc32.bin                  # Example 32-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
-|__ calc64.bin                  # Example 64-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
+|   |__ add-type/*               # Standalone function(s) for shellcode injection using `Add-Type`.
+|   |__ win32/*                  # Standalone function(s) for shellcode injection using Win32 API via helper functions.
+|   |__ native/*                 # Standalone function(s) for shellcode injection using Native API via helper functions.
+|
+|__ Load-Shellcode.ps1           # Main shellcode injector function, wrapping functionality of standalone functions.
+|__ calc32.bin                   # Example 32-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
+|__ calc64.bin                   # Example 64-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
 ```
 _(Note: this project is work-in-progress, therefore some directory structures haven't been implemented yet)_
 
