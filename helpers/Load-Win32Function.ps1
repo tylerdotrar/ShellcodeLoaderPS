@@ -1,7 +1,7 @@
 ﻿function Load-Win32Function {
 #.SYNOPSIS
 # PowerShell Script to Load Win32 API Calls into Session via Function Pointers and Delegates
-# Arbitrary Version Number: v1.0.2
+# Arbitrary Version Number: v1.0.3
 # Author: Tyler C. McCann (@tylerdotrar)
 #
 #.DESCRIPTION
@@ -18,6 +18,7 @@
 #   -FunctionName  -->  Target Win32 function to load into session.
 #   -ParamTypes    -->  Array of data-types for each function parameter (in order).
 #   -ReturnType    -->  Data-type of the return of the function.
+#   -Debug         -->  Print verbose debugging messages.
 #   -Help          -->  Return Get-Help information.
 #
 # Example Usage:
@@ -48,6 +49,7 @@
         [string]$FunctionName,
         [type[]]$ParamTypes    = @($null),
         [type]  $ReturnType    = [Void],
+        [switch]$Debug,
         [switch]$Help
     )
 
@@ -107,13 +109,15 @@
     foreach ($Assembly in [AppDomain]::CurrentDomain.GetAssemblies()) {
         $CustomType = $Assembly.GetType($FunctionName, $False)
         if ($CustomType -ne $NULL) {
-            Write-Host " o  Function '${FunctionName}()' already found in session."
+            if ($Debug) { Write-Host '[x] Debug: ' -NoNewLine -ForegroundColor Magenta ; Write-Host "Existing delegate found for " -NoNewline ; Write-Host "'${FunctionName}()'" -ForegroundColor Green }
             $FunctionDelegate = $CustomType
             break
         }
     }
 
     if (!$FunctionDelegate) {
+        
+        if ($Debug) { Write-Host '[x] Debug: ' -NoNewLine -ForegroundColor Magenta ; Write-Host "Building new delegate for " -NoNewline ; Write-Host "'${FunctionName}()'" -ForegroundColor Green }
 
         Try {
             # Generate a unique in-memory .NET assembly name to host delegate type
@@ -136,7 +140,6 @@
 
             # Return the usable, dynamic delegate type for function pointer invocation
             $FunctionDelegate = $TypeBuilder.CreateType()
-            Write-Host " o  Function '${FunctionName}()' loaded into session."
         }
         Catch {
             Write-Host "[!] Error building function delegate! Return details:" -ForegroundColor Red
