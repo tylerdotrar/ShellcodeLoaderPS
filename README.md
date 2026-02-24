@@ -17,6 +17,7 @@ ShellcodeLoaderPS/
 |   |__ Load-Win32Function.ps1   # Dynamically resolves and loads Win32 API functions into session via delegates.
 |   |__ Build-Win32Struct.ps1    # Defines .NET data structs within the session usable by Win32 functions.
 |   |__ Format-ByteArray.ps1     # Converts multi-language shellcode formats into usable byte arrays.
+|   |__ Syscall-Resolver.ps1     # Dynamically resolves syscall ID's and generates direct/indirect stubs.
 |
 |__ standalone/
 |   |__ add-type/*               # Simple standalone function(s) for shellcode injection using `Add-Type`.
