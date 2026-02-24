@@ -1,7 +1,7 @@
 ﻿function Load-Win32Function {
 #.SYNOPSIS
 # PowerShell Script to Load Win32 Functions into Session via Function Delegates
-# Arbitrary Version Number: v1.0.5
+# Arbitrary Version Number: v1.0.6
 # Author: Tyler C. McCann (@tylerdotrar)
 #
 #.DESCRIPTION
@@ -12,11 +12,12 @@
 # make it suboptimal (plus, relying on literal C# code to get a PowerShell script working feels like cheating).
 #
 # Parameters:
-#   -Library       -->  Library/DLL containing the target function.
-#   -FunctionName  -->  Target Win32 function to load into session.
-#   -ParamTypes    -->  Array of data-types for each function parameter (in order).
-#   -ReturnType    -->  Data-type of the return of the function.
-#   -Help          -->  Return Get-Help information.
+#   -Library          -->  Library/DLL containing the target function.
+#   -FunctionName     -->  Target Win32 function to load into session.
+#   -FunctionAddress  -->  Target function pointer to skip manual resolving.
+#   -ParamTypes       -->  Array of data-types for each function parameter (in order).
+#   -ReturnType       -->  Data-type of the return of the function.
+#   -Help             -->  Return Get-Help information.
 #
 # Example Usage:
 #  _____________________________________________________________________________________________________________________________________
@@ -44,6 +45,7 @@
     Param(
         [string]$Library,
         [string]$FunctionName,
+        [IntPtr]$FunctionAddress,
         [type[]]$ParamTypes = @($null),
         [type]  $ReturnType = [Void],
         [switch]$Help
@@ -54,51 +56,53 @@
     if ($Help) { return (Get-Help Load-Win32Function) }
 
 
-    # Minor Error Correction
-    if (!$Library)      { return (Write-Host '[!] Error! Missing library (e.g., "user32.dll").' -ForegroundColor Red)          }
-    if (!$FunctionName) { return (Write-Host '[!] Error! Missing target function (e.g., "MessageBoxA").' -ForegroundColor Red) }
+    # Minor Error Correction 
+    if (!$Library -and !$FunctionAddress) { return (Write-Host '[!] Error! Missing library (e.g., "user32.dll").' -ForegroundColor Red)          }
+    if (!$FunctionName)                   { return (Write-Host '[!] Error! Missing target function (e.g., "MessageBoxA").' -ForegroundColor Red) }
 
 
     # Step 1: Acquire Memory Address of Target Win32 Function
 
-    Try {
-        if ($PSVersionTable.PSEdition -eq 'Core') {
+    if (!$FunctionAddress) { 
+        Try {
+            if ($PSVersionTable.PSEdition -eq 'Core') {
             
-            # Get a handle to the target library via Load() method
-            $LibraryHandle   = [System.Runtime.InteropServices.NativeLibrary]::Load($Library)
-            if (($LibraryHandle -eq 0)   -or ($LibraryHandle -eq $NULL))   { return (Write-Host "[!] Error! Null handle to target library '${Library}'." -ForegroundColor Red) }
+                # Get a handle to the target library via Load() method
+                $LibraryHandle   = [System.Runtime.InteropServices.NativeLibrary]::Load($Library)
+                if (($LibraryHandle -eq 0)   -or ($LibraryHandle -eq $NULL))   { return (Write-Host "[!] Error! Null handle to target library '${Library}'." -ForegroundColor Red) }
 
-            # Acquire the memory address of the target function via GetExport() method
-            $FunctionAddress = [System.Runtime.InteropServices.NativeLibrary]::GetExport($LibraryHandle, $FunctionName)
-            if (($FunctionAddress -eq 0) -or ($FunctionAddress -eq $NULL)) { return (Write-Host "[!] Error! Unable to find address to target function '${FunctionName}'." -ForegroundColor Red) }
-        }
-        else {
+                # Acquire the memory address of the target function via GetExport() method
+                $FunctionAddress = [System.Runtime.InteropServices.NativeLibrary]::GetExport($LibraryHandle, $FunctionName)
+                if (($FunctionAddress -eq 0) -or ($FunctionAddress -eq $NULL)) { return (Write-Host "[!] Error! Unable to find address to target function '${FunctionName}'." -ForegroundColor Red) }
+            }
+            else {
         
-            # Get a reference to System.dll in the Global Assembly Cache (GAC)
-            $SystemAssembly  = [AppDomain]::CurrentDomain.GetAssemblies() | ? { $_.GlobalAssemblyCache -and ($_.Location -like '*\System.dll') }
-            $UnsafeMethods   = $SystemAssembly.GetType('Microsoft.Win32.UnsafeNativeMethods')
+                # Get a reference to System.dll in the Global Assembly Cache (GAC)
+                $SystemAssembly  = [AppDomain]::CurrentDomain.GetAssemblies() | ? { $_.GlobalAssemblyCache -and ($_.Location -like '*\System.dll') }
+                $UnsafeMethods   = $SystemAssembly.GetType('Microsoft.Win32.UnsafeNativeMethods')
 
-            # Get a reference to the GetModuleHandle() and GetProcAddress() functions
-            $GetModuleHandle = $UnsafeMethods.GetMethod('GetModuleHandle', [type[]]('System.String'))
-            $GetProcAddress  = $UnsafeMethods.GetMethod('GetProcAddress',  [type[]]('IntPtr','System.String'))
+                # Get a reference to the GetModuleHandle() and GetProcAddress() functions
+                $GetModuleHandle = $UnsafeMethods.GetMethod('GetModuleHandle', [type[]]('System.String'))
+                $GetProcAddress  = $UnsafeMethods.GetMethod('GetProcAddress',  [type[]]('IntPtr','System.String'))
 
-            # Get a handle to the target library (module) via GetModuleHandle()
-            $LibraryHandle   = $GetModuleHandle.Invoke($Null, @($Library))
-            if (($LibraryHandle -eq 0)   -or ($LibraryHandle -eq $NULL))   { return (Write-Host "[!] Error! Null handle to target library '${Library}'." -ForegroundColor Red) }
+                # Get a handle to the target library (module) via GetModuleHandle()
+                $LibraryHandle   = $GetModuleHandle.Invoke($Null, @($Library))
+                if (($LibraryHandle -eq 0)   -or ($LibraryHandle -eq $NULL))   { return (Write-Host "[!] Error! Null handle to target library '${Library}'." -ForegroundColor Red) }
 
-            # Acquire the memory address of the target function (proc) via GetProcAddress() 
-            $FunctionAddress = $GetProcAddress.Invoke($Null, @($LibraryHandle, $FunctionName))
-            if (($FunctionAddress -eq 0) -or ($FunctionAddress -eq $NULL)) { return (Write-Host "[!] Error! Unable to find address to target function '${FunctionName}'." -ForegroundColor Red) }
+                # Acquire the memory address of the target function (proc) via GetProcAddress() 
+                $FunctionAddress = $GetProcAddress.Invoke($Null, @($LibraryHandle, $FunctionName))
+                if (($FunctionAddress -eq 0) -or ($FunctionAddress -eq $NULL)) { return (Write-Host "[!] Error! Unable to find address to target function '${FunctionName}'." -ForegroundColor Red) }
+            }
+        }
+        Catch {
+            # return Generic-Error
+            Write-Host "[!] Error acquiring function memory address! Return details:" -ForegroundColor Red
+            $Error[0]
+            $_.Exception | Select-Object -Property ErrorRecord,Source,HResult | Format-List
+            $_.InvocationInfo | Select-Object -Property PSCommandPath,ScriptLineNumber,Statement | Format-List
+            return
         }
     }
-    Catch {
-        # return Generic-Error
-        Write-Host "[!] Error acquiring function memory address! Return details:" -ForegroundColor Red
-        $Error[0]
-        $_.Exception | Select-Object -Property ErrorRecord,Source,HResult | Format-List
-        $_.InvocationInfo | Select-Object -Property PSCommandPath,ScriptLineNumber,Statement | Format-List
-        return
-    } 
 
     # Step 2: Build Win32 Function Delegate for Parameter Types and Return Types
 
@@ -145,5 +149,6 @@
     }
 
     # Return usable function to session
+    Write-Host ' o  Function ' -NoNewline ; Write-Host "'${Library}!${FunctionName}()'" -NoNewline -ForegroundColor Green ; Write-Host ' loaded into session.'
     return [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($FunctionAddress, $FunctionDelegate)
 }

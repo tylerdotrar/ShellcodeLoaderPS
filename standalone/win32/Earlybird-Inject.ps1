@@ -282,7 +282,7 @@
         PAGE_EXECUTE_READWRITE = 0x40;
     }
     # Ref: https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
-    $CreationFlags = @{
+    $ProcessCreation = @{
         CREATE_SUSPENDED             = 0x00000004; # used
         CREATE_NO_WINDOWS            = 0x08000000;
         EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
@@ -477,7 +477,7 @@
     $lpProcessAttributes  = [ref]$ProcessAttributes                   # Pointer to a SECURITY_ATTRIBUTES struct (for the process).
     $lpThreadAttributes   = [ref]$ThreadAttributes                    # Pointer to a SECURITY_ATTRIBUTES struct (for the thread).
     $bInheritHandles      = $False                                    # Boolean for new process to inherit handles from calling process.  
-    $dwCreationFlags      = $CreationFlags.CREATE_SUSPENDED           # New process creation flags (i.e., create in suspended state).
+    $dwCreationFlags      = $ProcessCreation.CREATE_SUSPENDED         # New process creation flags (i.e., create in suspended state).
     $lpEnvironment        = [IntPtr]::Zero                            # Pointer to the environment block for the new process.
     $lpCurrentDirectory   = $(Split-Path -LiteralPath $CreateProcess) # Full path to the current directory for the process.
     $lpStartupInfo        = [ref]$StartupInfo                         # Pointer to STARTUPINFOA struct.

