@@ -102,8 +102,8 @@ $WriteProcMemArgs = @(
 $WriteProcessMemory = Load-Win32Function -Library "Kernel32.dll" -FunctionName "WriteProcessMemory" -ParamTypes $WriteProcMemArgs -ReturnType ([Bool])
 
 $VirtProtectExArgs = @(
-    [IntPtr],                 #hProcess
-    [IntPtr],                 #lpAddress
+    [IntPtr],                 # hProcess
+    [IntPtr],                 # lpAddress
     [UInt32],                 # dwSize
     [UInt32],                 # flNewProtect
     [UInt32].MakeByRefType()  # lpflOldProtect
@@ -113,7 +113,7 @@ $VirtualProtectEx = Load-Win32Function -Library "Kernel32.dll" -FunctionName "Vi
 
 ### Create SysCall Stub
 
-$SysCallStub = SysCall-Resolver -FunctionName "NtOpenProcess"
+$SyscallStub = Syscall-Resolver -FunctionName "NtOpenProcess" -GenStub
 
 
 ### Load Syscall Stub into Current Process

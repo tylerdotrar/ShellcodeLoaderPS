@@ -104,7 +104,7 @@
     if ($Indirect) { $InvokeMethod = 'Indirect Syscall' }
     else           { $InvokeMethod = 'Direct Syscall'   }
     
-    Write-Host '[!] SysCall Resolution:' -ForegroundColor Yellow
+    Write-Host '[!] Syscall Resolution:' -ForegroundColor Yellow
     Write-Host ' o  Target Library    -->  Ntdll.dll'
     Write-Host " o  Native Function   -->  ${FunctionName}"
     if ($GenStub)  { Write-Host " o  Invocation Method -->  ${InvokeMethod}" }

