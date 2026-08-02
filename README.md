@@ -1,4 +1,3 @@
-
 ![image](https://github.com/user-attachments/assets/64fc45d9-b612-47ff-b1bd-e88c89c73259)
 
 This project is a collect of educational PowerShell-based shellcode injection/execution tools with overly verbose comments by design.
@@ -6,29 +5,30 @@ The goal is to offer a modular, readable framework that can educate people on na
 and low-level PowerShell tomfoolery (without leaning on `Add-Type` or embedded `C#`).
 
 It is written with learning in mind over pure stealth and evasion -- hence why it is written in PowerShell instead of any other
-language that would *actually* make sense (though to be fair that is kinda what makes this project fun and interesting).
+language that would *actually* make sense (though to be fair that is kinda what makes this project fun and interesting).  Since learning
+is the predominant objective, the use LLM's been minimized to troubleshooting; thus every script is 99% human written.
 
 **📁 Directory Structure**
 ```
 ShellcodeLoaderPS/
 |
-|__ helpers/
+|__ helpers/                     # // Standalone Helper Functions contained within Standalone PoC's //
 |   |__ win32-examples/*         # Contains examples of Win32 API usage via helper functions (e.g., `CreateProcessA().ps1`).
 |   |__ Load-Win32Function.ps1   # Dynamically resolves and loads Win32 API functions into session via delegates.
 |   |__ Build-Win32Struct.ps1    # Defines .NET data structs within the session usable by Win32 functions.
 |   |__ Format-ByteArray.ps1     # Converts multi-language shellcode formats into usable byte arrays.
 |   |__ Syscall-Resolver.ps1     # Dynamically resolves syscall ID's and generates direct/indirect stubs.
 |
-|__ standalone/
-|   |__ add-type/*               # Simple standalone function(s) for shellcode injection using `Add-Type`.
-|   |__ win32/*                  # Advanced standalone function(s) for shellcode injection using function pointer delegates.
+|__ standalone/                  # // Individual Shellcode Injection Scripts //
+|   |__ 1_add-type/*             # Simple standalone function(s) using `Add-Type`.
+|   |__ 2_win32/*                # Moderate standalone function(s) using function pointer delegates targeting the Win32 API.
+|   |__ 3_napi/*                 # Advanced standalone function(s) using function pointer delegates targeting the Native API & Syscalls.
 |
-|__ Load-Shellcode.ps1           # Monolithic shellcode injection script that wraps the advanced standalone scripts.
+|__ Load-Shellcode.ps1           # Monolithic shellcode injection script that wraps the `2_win32` standalone scripts.
 |__ calc32.bin                   # Example 32-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
 |__ calc64.bin                   # Example 64-bit `calc.exe` shellcode generated from `msfvenom` used for testing.
-|__ msgbox64.bin                 # Example 64-bit `MessageBoxA()` shellcode used for testing.
+|__ msgboxa64.bin                # Example 64-bit `MessageBoxA()` shellcode generated from the Stardust project.
 ```
-_(Note: this project is work-in-progress, therefore some directory structures haven't been implemented yet)_
 
 ---
 
@@ -39,7 +39,7 @@ _(Note: this project is work-in-progress, therefore some directory structures ha
 
 <details>
   <summary><b>✅ Avoiding Import Address Table (IAT) via Function Delegates</b></summary>
-  
+
   - **Summary:**
     - This technique avoids common (and noisy) practices such as utilizing `Add-Type` and embedded `C#`.
     - This is accomplished via custom helpers to resolve and invoke raw function pointers with .NET delegates, allowing you to invoke them without adding an entry to the IAT.
@@ -52,7 +52,7 @@ _(Note: this project is work-in-progress, therefore some directory structures ha
   - **Summary:**
     - Inject shellcode into the current local process (i.e., `PowerShell`) using standard Win32 API calls (aka `Kernel32.dll`).
     - Skipping Native API (aka `Ntdll.dll`) due to remote process injection POC also supporting local process injection.
-    - Custom Script: [Local-ProcessInject.ps1](./standalone/win32/Local-ProcessInject.ps1)
+    - Custom Script: [Local-ProcessInject.ps1](./standalone/2_win32/Local-ProcessInject.ps1)
 ```mermaid
 flowchart LR
 
@@ -75,7 +75,7 @@ end
   - **Summary:**
     - Inject shellcode into remote processes via the Win32 API (aka `Kernel32.dll`).
     - This also works for local process injection by targeting the current process' PID.
-    - Custom Script: [Remote-ProcessInject.ps1](./standalone/win32/Remote-ProcessInject.ps1)
+    - Custom Script: [Remote-ProcessInject.ps1](./standalone/2_win32/Remote-ProcessInject.ps1)
 ```mermaid
 flowchart TD;
 
@@ -94,38 +94,50 @@ end
 
 <details>
   <summary><b>✅ Process Hollowing</b></summary>
-  
+
   - **Summary:**
     - Create a legitimate process in a suspended state, then replace the process' memory with malicious code before resuming execution.
-    - Custom Script: [Process-Hollow.ps1](./standalone/win32/Process-Hollow.ps1)
+    - Custom Script: [Process-Hollow.ps1](./standalone/2_win32/Process-Hollow.ps1)
     - Will add a pretty Mermaid diagram soon.
 </details>
 
 <details>
   <summary><b>✅ APC Injection (aka Earlybird)</b></summary>
-  
+
   - **Summary:**
     - Queue shellcode execution to a thread's Asynchronous Procedure Call (APC) queue for stealthy execution.
-    - Custom Script: [Earlybird-Inject.ps1](./standalone/win32/Earlybird-Inject.ps1)
+    - Custom Script: [Earlybird-Inject.ps1](./standalone/2_win32/Earlybird-Inject.ps1)
     - Will add a pretty Mermaid diagram soon.
 </details>
 
 <details>
   <summary><b>✅ Parent Process ID (PPID) Spoofing</b></summary>
-  
+
   - **Summary:**
     - Spoof the parent process ID when creating processes.
     - This technique can make malicious processes appear spawned from trusted processes.
-    - Custom Script: [PPID-Spoof.ps1](./standalone/win32/PPID-Spoof.ps1)
+    - Custom Script: [PPID-Spoof.ps1](./standalone/2_win32/PPID-Spoof.ps1)
     - Will add a pretty Mermaid diagram soon.
 </details>
 
 <details>
-  <summary><b>❌ Remote Process Injection (via Ntdll.dll)</b></summary>
+  <summary><b>✅ Direct & Indirect Syscall Implementation</b></summary>
 
   - **Summary:**
-    - Inject shellcode into remote processes via the Native API (aka `Ntdll.dll`).
+    - Bypass userland API hooks by invoking direct & indirect system calls via Syscall stubs.
+    - Syscalls are dependent on system architecture and build versions, so this will need to be very modular.
+    - Reference: https://j00ru.vexillium.org/syscalls/nt/64/
+    - Custom Script: [Syscall-Resolver.ps1](./helpers/Syscall-Resolver.ps1)
+    - Will refine and turn into a proper injection technique later.
+</details>
+
+<details>
+  <summary><b>✅ Local/Remote Process Injection (via Ntdll.dll & Syscalls)</b></summary>
+
+  - **Summary:**
+    - Inject shellcode into remote processes via the Native API (aka `Ntdll.dll`), as well as syscalls.
     - This also works for local process injection by targeting the current process' PID.
+    - Custom Script: [NtLocalInject.ps1](./standalone/3_napi/NtLocalInject.ps1), [NtRemoteInject](./standalone/3_napi/NtRemoteInject.ps1)
 ```mermaid
 flowchart TD;
 
@@ -142,17 +154,6 @@ end
 ```
 </details>
 
-<details>
-  <summary><b>✅ Syscall Implementation</b></summary>
-  
-  - **Summary:**
-    - Bypass userland API hooks by invoking direct & indirect system calls via Syscall stubs.
-    - Syscalls are dependent on system architecture and build versions, so this will need to be very modular.
-    - Reference: https://j00ru.vexillium.org/syscalls/nt/64/
-    - Custom Script: [Syscall-Resolver.ps1](./helpers/Syscall-Resolver.ps1)
-    - Will refine and turn into a proper injection technique later.
-</details>
-
 ## Load-Shellcode.ps1 Usage
 
 > Every script should hopefully be excessively documented, so please refer to the source code for other examples.
@@ -167,7 +168,7 @@ Parameters:
   -RemoteInject   -->  Perform remote process injection.           (alias: -Remote)
   -ProcessHollow  -->  Perform process hollowing.                  (alias: -Hollow)
   -APCInject      -->  Perform Earlybird APC queue injection.      (alias: -Earlybird)
- 
+
   # Universal Arguments
   -Shellcode      -->  Shellcode to execute (can be a byte array, string, filepath, or URI).
   -XorKey         -->  XOR cipher key for the shellcode (max value: 0xFF).
@@ -204,7 +205,7 @@ _(Note: old photo; will update once I fix some issues and bump to v1.0.0)_
 
 The `-Shellcode` parameter is intentionally undeclared and written to accept most shellcode formats.
 Currently supports `[string]`, `[array]/[byte[]]`, and `[uri]` types.  If a standard array is used, the
-array will be converted to a string prior to language detection.  If a byte array is used, no 
+array will be converted to a string prior to language detection.  If a byte array is used, no
 formatting will occur.  If a string is determined to be a URI, then a web request will attempt to
 download the raw bytes from the provided URI.
 
